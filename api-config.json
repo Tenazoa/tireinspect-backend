@@ -1,0 +1,4 @@
+{
+  "apiUrl": "https://don-susan-delight-cartridges.trycloudflare.com",
+  "note": "URL del backend. Cambiar a la URL permanente de Render cuando esté lista. El APK lee esto al arrancar."
+}
