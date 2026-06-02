@@ -2,8 +2,10 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str
-    SECRET_KEY: str
+    # Default SQLite para arranque simple en la nube (sin configurar nada).
+    # Si se define DATABASE_URL (ej. PostgreSQL de Render), se usa esa.
+    DATABASE_URL: str = "sqlite:///./tireinspect.db"
+    SECRET_KEY: str = "change-me-in-production-tireinspect-2026"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 días
 
