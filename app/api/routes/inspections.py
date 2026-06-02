@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
+import io
 from ...core.database import get_db
 from ...models.models import Inspection, TireInspection, TirePhoto, Vehicle, Inspector
 from ...api.deps import get_current_inspector
+from ...services.pdf_report import generate_inspection_pdf
 
 router = APIRouter(prefix="/inspections", tags=["inspections"])
 
@@ -169,3 +172,102 @@ def list_inspections(
             completedAt=i.completed_at.isoformat() if i.completed_at else None,
         ))
     return result
+
+
+# ── Fase 4: Reporte PDF ──────────────────────────────────────────────────────
+
+@router.get("/{inspection_id}/pdf")
+def inspection_pdf(
+    inspection_id: str,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Genera y descarga el reporte PDF de una inspección."""
+    insp = db.get(Inspection, inspection_id)
+    if not insp:
+        raise HTTPException(404, "Inspección no encontrada")
+
+    vehicle = insp.vehicle
+    if vehicle.company_id != inspector.company_id:
+        raise HTTPException(403, "No autorizado")
+
+    company_name = inspector.company.name if inspector.company else "TireInspect"
+    pdf_bytes = generate_inspection_pdf(insp, vehicle, insp.inspector, company_name)
+
+    filename = f"inspeccion_{vehicle.plate}_{insp.created_at.strftime('%Y%m%d')}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+# ── Fase 4: Historial de vehículo ────────────────────────────────────────────
+
+class TireHistoryPoint(BaseModel):
+    date: str
+    position: str
+    depthMm: Optional[float]
+    recommendation: str
+
+
+class VehicleHistoryOut(BaseModel):
+    vehicleId: str
+    plate: str
+    vehicleLabel: str
+    totalInspections: int
+    inspections: list[dict]
+    depthTrend: list[TireHistoryPoint]
+
+
+@router.get("/vehicle/{vehicle_id}/history", response_model=VehicleHistoryOut)
+def vehicle_history(
+    vehicle_id: str,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Historial completo de inspecciones de un vehículo, con tendencia de desgaste."""
+    vehicle = db.get(Vehicle, vehicle_id)
+    if not vehicle:
+        raise HTTPException(404, "Vehículo no encontrado")
+    if vehicle.company_id != inspector.company_id:
+        raise HTTPException(403, "No autorizado")
+
+    inspections = (
+        db.query(Inspection)
+        .filter(Inspection.vehicle_id == vehicle_id)
+        .order_by(Inspection.created_at.asc())
+        .all()
+    )
+
+    insp_list = []
+    trend: list[TireHistoryPoint] = []
+    for i in inspections:
+        date_iso = (i.completed_at or i.created_at).isoformat()
+        critical = sum(1 for t in i.tires if t.recommendation in ("replace_soon", "replace_now"))
+        avg_depths = [t.tread_depth_center for t in i.tires if t.tread_depth_center is not None]
+        avg_depth = round(sum(avg_depths) / len(avg_depths), 1) if avg_depths else None
+        insp_list.append({
+            "id": i.id,
+            "date": date_iso,
+            "inspector": i.inspector.name,
+            "tireCount": len(i.tires),
+            "criticalCount": critical,
+            "avgDepthMm": avg_depth,
+            "odometerKm": i.odometer_km,
+        })
+        for t in i.tires:
+            if t.tread_depth_center is not None:
+                trend.append(TireHistoryPoint(
+                    date=date_iso, position=t.position,
+                    depthMm=t.tread_depth_center, recommendation=t.recommendation,
+                ))
+
+    return VehicleHistoryOut(
+        vehicleId=vehicle.id,
+        plate=vehicle.plate,
+        vehicleLabel=f"{vehicle.brand} {vehicle.model} {vehicle.year or ''}".strip(),
+        totalInspections=len(inspections),
+        inspections=insp_list,
+        depthTrend=trend,
+    )

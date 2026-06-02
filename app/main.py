@@ -4,10 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from .core.config import settings
 from .core.database import Base, engine
+from .core.seed import seed_if_empty
 from .api.routes import auth, vehicles, inspections, photos, ai
 
-# Crear tablas al iniciar
+# Crear tablas al iniciar y sembrar datos demo si está vacía (útil en la nube)
 Base.metadata.create_all(bind=engine)
+seed_if_empty()
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
 app = FastAPI(

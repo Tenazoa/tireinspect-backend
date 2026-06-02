@@ -6,6 +6,7 @@ from ...api.deps import get_current_inspector
 from ...models.models import Inspector
 from ...services.ai.tire_analyzer import analyze_tire_image, WEAR_LEVELS
 from ...services.ai.dataset_collector import save_training_sample, get_dataset_stats
+from ...services.ai.reference_measurement import measure_with_reference, REFERENCE_OBJECTS
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -100,3 +101,69 @@ async def analyze_tire(
 def dataset_stats(_: Inspector = Depends(get_current_inspector)):
     """Estadísticas del dataset acumulado para entrenamiento."""
     return get_dataset_stats()
+
+
+# ── Fase 3: Medición con objeto de referencia ───────────────────────────────
+
+class ReferenceMeasurementOut(BaseModel):
+    success: bool
+    reference_detected: bool
+    reference_type: str
+    reference_label: str
+    mm_per_pixel: float
+    measured_depth_mm: Optional[float]
+    recommendation: Optional[str]
+    confidence: float
+    notes: str
+
+
+@router.get("/reference-objects")
+def list_reference_objects(_: Inspector = Depends(get_current_inspector)):
+    """Lista de objetos de referencia soportados para calibración."""
+    return [
+        {"id": k, "label": v["label"], "real_mm": v["real_mm"], "shape": v["shape"]}
+        for k, v in REFERENCE_OBJECTS.items()
+    ]
+
+
+@router.post("/measure", response_model=ReferenceMeasurementOut)
+async def measure_tread(
+    file: UploadFile = File(...),
+    reference_type: str = Form(default="coin_pen_1"),
+    _: Inspector = Depends(get_current_inspector),
+):
+    """
+    Mide la profundidad real del surco usando un objeto de referencia
+    (moneda o tarjeta) visible en la foto.
+    """
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "Solo se permiten imágenes")
+
+    image_bytes = await file.read()
+    if len(image_bytes) < 1000:
+        raise HTTPException(400, "Imagen demasiado pequeña o vacía")
+
+    result = measure_with_reference(image_bytes, reference_type)
+
+    # Recomendación según profundidad medida
+    recommendation = None
+    if result.measured_depth_mm is not None:
+        d = result.measured_depth_mm
+        if d <= 1.6:   recommendation = "replace_now"
+        elif d <= 3.0: recommendation = "replace_soon"
+        elif d <= 4.0: recommendation = "monitor"
+        else:          recommendation = "ok"
+
+    label = REFERENCE_OBJECTS.get(result.reference_type, {}).get("label", "")
+
+    return ReferenceMeasurementOut(
+        success=result.success,
+        reference_detected=result.reference_detected,
+        reference_type=result.reference_type,
+        reference_label=label,
+        mm_per_pixel=result.mm_per_pixel,
+        measured_depth_mm=result.measured_depth_mm,
+        recommendation=recommendation,
+        confidence=result.confidence,
+        notes=result.notes,
+    )
