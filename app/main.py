@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from .core.config import settings
 from .core.database import Base, engine
 from .core.seed import seed_if_empty
-from .api.routes import auth, vehicles, inspections, photos, ai
+from .api.routes import auth, vehicles, inspections, photos, ai, fleet
 
 # Crear tablas al iniciar y sembrar datos demo si está vacía (útil en la nube)
 Base.metadata.create_all(bind=engine)
@@ -31,6 +31,7 @@ app.include_router(vehicles.router, prefix="/api/v1")
 app.include_router(inspections.router, prefix="/api/v1")
 app.include_router(photos.router, prefix="/api/v1")
 app.include_router(ai.router, prefix="/api/v1")
+app.include_router(fleet.router, prefix="/api/v1")
 
 # Servir fotos subidas localmente
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")

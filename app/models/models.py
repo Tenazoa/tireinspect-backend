@@ -116,3 +116,24 @@ class TirePhoto(Base):
     captured_at: Mapped[datetime] = mapped_column(nullable=False)
 
     tire: Mapped["TireInspection"] = relationship(back_populates="photos")
+
+
+class TireSpec(Base):
+    """
+    Catálogo de llantas por placa+posición (datos de SOLOMON).
+    Sirve para el autollenado: al inspeccionar una placa, se traen
+    marca/modelo/medida/última cocada conocidas de cada posición.
+    """
+    __tablename__ = "tire_specs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    plate: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    position: Mapped[str] = mapped_column(String, nullable=False)
+    brand: Mapped[str | None] = mapped_column(String, nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    size: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_depth_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    code: Mapped[str | None] = mapped_column(String, nullable=True)
+    life: Mapped[str | None] = mapped_column(String, nullable=True)
+    vehicle_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
