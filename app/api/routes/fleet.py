@@ -95,6 +95,38 @@ def import_fleet(
     return {"ok": True, "vehiclesCreated": vehicles_created, "tireSpecs": specs_created}
 
 
+class VehicleMakeIn(BaseModel):
+    plate: str
+    brand: str
+    model: Optional[str] = "Tracto"
+
+
+class MakesImportIn(BaseModel):
+    makes: list[VehicleMakeIn]
+
+
+@router.post("/update-makes")
+def update_makes(
+    body: MakesImportIn,
+    db: Session = Depends(get_db),
+    _: Inspector = Depends(get_current_inspector),
+):
+    """Actualiza marca/modelo del vehículo por placa (datos de SITUACIONAL FLOTA)."""
+    updated = 0
+    not_found = []
+    for m in body.makes:
+        plate = m.plate.strip().upper()
+        v = db.query(Vehicle).filter(Vehicle.plate == plate).first()
+        if v:
+            v.brand = m.brand
+            v.model = m.model or "Tracto"
+            updated += 1
+        else:
+            not_found.append(plate)
+    db.commit()
+    return {"ok": True, "updated": updated, "notFound": not_found[:20], "notFoundCount": len(not_found)}
+
+
 class TireSpecOut(BaseModel):
     position: str
     brand: Optional[str]
