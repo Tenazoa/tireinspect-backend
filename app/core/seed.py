@@ -79,20 +79,11 @@ def seed_if_empty() -> None:
         )
         db.add(inspector)
 
-        vehicles = [
-            {"plate": "ABC-123", "brand": "Volvo", "model": "FH 460", "year": 2021, "type": "truck", "axle_count": 3, "tire_positions": TRUCK_6X4},
-            {"plate": "XYZ-789", "brand": "Kenworth", "model": "T680", "year": 2019, "type": "truck", "axle_count": 3, "tire_positions": TRUCK_6X4},
-            {"plate": "DEF-456", "brand": "Mercedes-Benz", "model": "Actros", "year": 2022, "type": "truck", "axle_count": 3, "tire_positions": TRUCK_6X4},
-            {"plate": "TR1-001", "brand": "Randon", "model": "Carreta 3 ejes", "year": 2020, "type": "trailer", "axle_count": 3, "tire_positions": TRAILER_6X0},
-        ]
-        for vd in vehicles:
-            db.add(Vehicle(id=str(uuid.uuid4()), company_id=company.id, **vd))
-
-        # Cargar flota real de SOLOMON
+        # Solo flota real de SOLOMON (sin placas demo)
         fleet_count = _load_fleet(db, company.id)
 
         db.commit()
-        print(f"[seed] Datos demo + {fleet_count} vehiculos SOLOMON creados: inspector@demo.com / demo1234")
+        print(f"[seed] Inspector + {fleet_count} vehiculos SOLOMON creados: inspector@demo.com / demo1234")
     except Exception as e:
         db.rollback()
         print(f"[seed] Error: {e}")
