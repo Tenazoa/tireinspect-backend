@@ -346,6 +346,7 @@ def seed_from_specs(
                 brand=s.brand,
                 model=s.model,
                 size=s.size,
+                dot_code=s.code,
                 tread_depth_center=depth,
                 recommendation=rec_for(depth),
                 inspected_at=when,
@@ -384,6 +385,13 @@ def dashboard(
 
     total_vehicles = db.query(Vehicle).filter(Vehicle.company_id == inspector.company_id).count()
 
+    # lookup de código de fuego + vida por placa+posición (datos SOLOMON limpios)
+    spec_rows = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
+    spec_lookup: dict[tuple, TireSpec] = {}
+    for s in spec_rows:
+        key = ((s.plate or "").upper().replace("-", "").replace(" ", ""), s.position)
+        spec_lookup[key] = s
+
     vehicles_out = []
     alerts = []
     all_depths = []
@@ -416,6 +424,7 @@ def dashboard(
                 })
                 if rec in ("replace_now", "replace_soon"):
                     critical_total += 1
+            spec = spec_lookup.get(((v.plate or "").upper().replace("-", "").replace(" ", ""), t.position))
             tires.append({
                 "position": position_label(t.position),
                 "brand": t.brand,
@@ -423,6 +432,8 @@ def dashboard(
                 "size": t.size,
                 "depth": depth,
                 "rec": rec,
+                "code": (spec.code if spec else None) or t.dot_code,
+                "life": spec.life if spec else None,
             })
 
         avg = round(sum(depths) / len(depths), 1) if depths else None
