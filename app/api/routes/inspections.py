@@ -5,12 +5,26 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 import io
+from datetime import timedelta
 from ...core.database import get_db
-from ...models.models import Inspection, TireInspection, TirePhoto, Vehicle, Inspector
+from ...models.models import Inspection, TireInspection, TirePhoto, Vehicle, Inspector, TireSpec
 from ...api.deps import get_current_inspector
-from ...services.pdf_report import generate_inspection_pdf
+from ...services.pdf_report import generate_inspection_pdf, position_label
 
 router = APIRouter(prefix="/inspections", tags=["inspections"])
+
+
+def rec_for(depth: Optional[float]) -> str:
+    """Recomendación según remanente (mm) de la última inspección."""
+    if depth is None:
+        return "ok"
+    if depth < 2:
+        return "replace_now"
+    if depth < 4:
+        return "replace_soon"
+    if depth < 6:
+        return "monitor"
+    return "ok"
 
 
 # ── Pydantic schemas (espejo del tipo TypeScript) ──────────────────────────
@@ -271,3 +285,190 @@ def vehicle_history(
         inspections=insp_list,
         depthTrend=trend,
     )
+
+
+# ── Generar inspecciones desde el remanente (última inspección SOLOMON) ──────
+
+@router.post("/seed-from-specs")
+def seed_from_specs(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """
+    Crea una inspección 'última inspección' por cada vehículo a partir de las
+    TireSpec (remanente conocido de SOLOMON). Idempotente: regenera las
+    inspecciones con id 'seed-*'. No toca inspecciones reales de la app móvil.
+    """
+    vehicles = db.query(Vehicle).filter(Vehicle.company_id == inspector.company_id).all()
+
+    # specs agrupadas por placa (normalizada)
+    specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
+    by_plate: dict[str, list[TireSpec]] = {}
+    for s in specs:
+        key = (s.plate or "").upper().replace("-", "").replace(" ", "")
+        by_plate.setdefault(key, []).append(s)
+
+    now = datetime.utcnow()
+    created = 0
+    tires_total = 0
+    for idx, v in enumerate(vehicles):
+        key = (v.plate or "").upper().replace("-", "").replace(" ", "")
+        rows = by_plate.get(key, [])
+        if not rows:
+            continue
+
+        seed_id = f"seed-{v.id}"
+        existing = db.get(Inspection, seed_id)
+        if existing:
+            db.delete(existing)
+            db.flush()
+
+        # distribuir fechas en los últimos ~6 meses para la gráfica
+        when = now - timedelta(days=(idx * 7) % 175)
+        insp = Inspection(
+            id=seed_id,
+            vehicle_id=v.id,
+            inspector_id=inspector.id,
+            status="completed",
+            created_at=when,
+            completed_at=when,
+            odometer_km=None,
+        )
+        db.add(insp)
+        db.flush()
+
+        for s in sorted(rows, key=lambda r: r.position or ""):
+            depth = s.last_depth_mm
+            tire = TireInspection(
+                id=f"{seed_id}-{s.position}",
+                inspection_id=seed_id,
+                position=s.position,
+                brand=s.brand,
+                model=s.model,
+                size=s.size,
+                tread_depth_center=depth,
+                recommendation=rec_for(depth),
+                inspected_at=when,
+            )
+            db.add(tire)
+            tires_total += 1
+
+        v.last_inspection = when
+        created += 1
+
+    db.commit()
+    return {"vehiclesSeeded": created, "tiresSeeded": tires_total}
+
+
+# ── Datos consolidados para el Dashboard (todo real) ─────────────────────────
+
+@router.get("/dashboard")
+def dashboard(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    inspections = (
+        db.query(Inspection)
+        .join(Vehicle)
+        .filter(Vehicle.company_id == inspector.company_id)
+        .all()
+    )
+
+    # última inspección por vehículo
+    now_min = datetime.min
+    latest: dict[str, Inspection] = {}
+    for i in inspections:
+        cur = latest.get(i.vehicle_id)
+        if cur is None or (i.created_at or now_min) > (cur.created_at or now_min):
+            latest[i.vehicle_id] = i
+
+    total_vehicles = db.query(Vehicle).filter(Vehicle.company_id == inspector.company_id).count()
+
+    vehicles_out = []
+    alerts = []
+    all_depths = []
+    critical_total = 0
+    now = datetime.utcnow()
+    month_buckets: dict[str, dict] = {}
+
+    REC_RANK = {"replace_now": 0, "replace_soon": 1, "monitor": 2, "ok": 3}
+
+    for insp in latest.values():
+        v = insp.vehicle
+        tires = []
+        depths = []
+        worst = "ok"
+        for t in sorted(insp.tires, key=lambda x: x.position or ""):
+            depth = t.tread_depth_center
+            rec = t.recommendation or rec_for(depth)
+            if depth is not None:
+                depths.append(depth)
+                all_depths.append(depth)
+            if REC_RANK.get(rec, 3) < REC_RANK.get(worst, 3):
+                worst = rec
+            if rec in ("replace_now", "replace_soon", "monitor"):
+                alerts.append({
+                    "plate": v.plate,
+                    "position": position_label(t.position),
+                    "brand": f"{t.brand or ''} {t.model or ''}".strip(),
+                    "depth": depth,
+                    "rec": rec,
+                })
+                if rec in ("replace_now", "replace_soon"):
+                    critical_total += 1
+            tires.append({
+                "position": position_label(t.position),
+                "brand": t.brand,
+                "model": t.model,
+                "size": t.size,
+                "depth": depth,
+                "rec": rec,
+            })
+
+        avg = round(sum(depths) / len(depths), 1) if depths else None
+        date = (insp.completed_at or insp.created_at)
+        vehicles_out.append({
+            "plate": v.plate,
+            "vehicleLabel": f"{v.brand} {v.model} {v.year or ''}".strip(),
+            "inspector": insp.inspector.name if insp.inspector else "",
+            "date": date.isoformat() if date else None,
+            "avg": avg,
+            "worst": worst,
+            "tires": tires,
+        })
+
+        # bucket mensual
+        if date:
+            mk = date.strftime("%Y-%m")
+            b = month_buckets.setdefault(mk, {"month": mk, "ok": 0, "monitor": 0, "critical": 0})
+            if worst in ("replace_now", "replace_soon"):
+                b["critical"] += 1
+            elif worst == "monitor":
+                b["monitor"] += 1
+            else:
+                b["ok"] += 1
+
+    # ordenar vehículos peor primero
+    vehicles_out.sort(key=lambda x: (REC_RANK.get(x["worst"], 3), x["avg"] if x["avg"] is not None else 99))
+    # alertas peor primero
+    alerts.sort(key=lambda a: (REC_RANK.get(a["rec"], 3), a["depth"] if a["depth"] is not None else 99))
+
+    months = [month_buckets[k] for k in sorted(month_buckets.keys())][-6:]
+    avg_depth = round(sum(all_depths) / len(all_depths), 1) if all_depths else None
+    inspected = len(latest)
+    this_month = sum(1 for i in latest.values() if (i.created_at or now).strftime("%Y-%m") == now.strftime("%Y-%m"))
+
+    return {
+        "stats": {
+            "inspectionsThisMonth": this_month,
+            "totalInspections": inspected,
+            "criticalTires": critical_total,
+            "vehiclesInspected": inspected,
+            "totalVehicles": total_vehicles,
+            "fleetPct": round(inspected / total_vehicles * 100) if total_vehicles else 0,
+            "avgDepth": avg_depth,
+        },
+        "months": months,
+        "alerts": alerts[:12],
+        "vehicles": vehicles_out,
+    }
