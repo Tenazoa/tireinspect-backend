@@ -188,6 +188,55 @@ def list_inspections(
     return result
 
 
+@router.get("/{inspection_id}/detail")
+def inspection_detail(
+    inspection_id: str,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Detalle completo de una inspección con todas sus llantas."""
+    insp = db.get(Inspection, inspection_id)
+    if not insp:
+        raise HTTPException(404, "Inspección no encontrada")
+    v = insp.vehicle
+    if v.company_id != inspector.company_id:
+        raise HTTPException(403, "No autorizado")
+
+    key = (v.plate or "").upper().replace("-", "").replace(" ", "")
+    specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
+    spec_lookup = {
+        s.position: s for s in specs
+        if (s.plate or "").upper().replace("-", "").replace(" ", "") == key
+    }
+
+    tires = []
+    for t in sorted(insp.tires, key=lambda x: x.position or ""):
+        sp = spec_lookup.get(t.position)
+        tires.append({
+            "position": position_label(t.position),
+            "positionCode": t.position,
+            "brand": t.brand,
+            "model": t.model,
+            "size": t.size,
+            "depth": t.tread_depth_center,
+            "recommendation": t.recommendation,
+            "code": (sp.code if sp else None) or t.dot_code,
+            "life": sp.life if sp else None,
+            "pressurePsi": t.pressure_psi,
+            "notes": t.notes,
+        })
+    date = insp.completed_at or insp.created_at
+    return {
+        "id": insp.id,
+        "plate": v.plate,
+        "vehicleLabel": f"{v.brand} {v.model} {v.year or ''}".strip(),
+        "inspectorName": insp.inspector.name if insp.inspector else "",
+        "date": date.isoformat() if date else None,
+        "odometerKm": insp.odometer_km,
+        "tires": tires,
+    }
+
+
 # ── Fase 4: Reporte PDF ──────────────────────────────────────────────────────
 
 @router.get("/{inspection_id}/pdf")
@@ -206,7 +255,16 @@ def inspection_pdf(
         raise HTTPException(403, "No autorizado")
 
     company_name = inspector.company.name if inspector.company else "TireInspect"
-    pdf_bytes = generate_inspection_pdf(insp, vehicle, insp.inspector, company_name)
+
+    # lookup de código de fuego + vida por posición (SOLOMON)
+    key = (vehicle.plate or "").upper().replace("-", "").replace(" ", "")
+    specs = db.query(TireSpec).filter(TireSpec.plate.isnot(None)).all()
+    spec_lookup = {
+        s.position: {"code": s.code, "life": s.life}
+        for s in specs
+        if (s.plate or "").upper().replace("-", "").replace(" ", "") == key
+    }
+    pdf_bytes = generate_inspection_pdf(insp, vehicle, insp.inspector, company_name, spec_lookup)
 
     filename = f"inspeccion_{vehicle.plate}_{insp.created_at.strftime('%Y%m%d')}.pdf"
     return StreamingResponse(

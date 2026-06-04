@@ -65,11 +65,13 @@ class _PosLabel:
 POSITION_LABEL = _PosLabel()
 
 
-def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str) -> bytes:
+def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str, spec_lookup: dict | None = None) -> bytes:
     """
     Genera el PDF de una inspección. Retorna los bytes del archivo.
     `inspection`, `vehicle`, `inspector` son objetos ORM.
+    `spec_lookup`: dict {posicion: {"code":.., "life":..}} para código de fuego y vida.
     """
+    spec_lookup = spec_lookup or {}
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=A4,
@@ -145,23 +147,27 @@ def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str) -
 
     # ── Detalle por llanta ──
     elements.append(Paragraph("Detalle por posición", h2))
-    header = ["Posición", "Profundidad", "Marca / Modelo", "Medida", "Presión", "Estado"]
+    header = ["Posición", "Prof.", "Marca / Modelo", "Medida", "Cód. fuego", "Vida", "Estado"]
     rows = [header]
     for t in tires:
         depth = (
             f"{t.tread_depth_center:.1f} mm" if t.tread_depth_center is not None else "—"
         )
         marca = " ".join(filter(None, [t.brand, t.model])) or "—"
+        sp = spec_lookup.get(t.position, {})
+        codigo = sp.get("code") or t.dot_code or "—"
+        vida = sp.get("life") or "—"
         rows.append([
             POSITION_LABEL.get(t.position, t.position),
             depth,
             marca,
             t.size or "—",
-            f"{t.pressure_psi:.0f} PSI" if t.pressure_psi else "—",
+            str(codigo),
+            str(vida),
             REC_LABEL.get(t.recommendation, t.recommendation),
         ])
 
-    tire_table = Table(rows, colWidths=[28 * mm, 24 * mm, 45 * mm, 28 * mm, 20 * mm, 29 * mm])
+    tire_table = Table(rows, colWidths=[22 * mm, 18 * mm, 44 * mm, 26 * mm, 24 * mm, 14 * mm, 26 * mm])
     style = [
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -175,8 +181,8 @@ def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str) -
     ]
     # Colorear celda de estado según recomendación
     for i, t in enumerate(tires, start=1):
-        style.append(("TEXTCOLOR", (5, i), (5, i), REC_COLOR.get(t.recommendation, colors.black)))
-        style.append(("FONTNAME", (5, i), (5, i), "Helvetica-Bold"))
+        style.append(("TEXTCOLOR", (6, i), (6, i), REC_COLOR.get(t.recommendation, colors.black)))
+        style.append(("FONTNAME", (6, i), (6, i), "Helvetica-Bold"))
     tire_table.setStyle(TableStyle(style))
     elements.append(tire_table)
 
