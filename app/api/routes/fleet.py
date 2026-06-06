@@ -231,6 +231,86 @@ async def upload_solomon(
     }
 
 
+@router.get("/stats/analytics")
+def fleet_analytics(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """
+    Análisis de la flota de llantas: cantidades por marca, modelo y medida;
+    nuevas (1V) vs reencauchadas (xR); e índices de reencauche/reencauchabilidad.
+    """
+    import re
+    from collections import Counter
+
+    specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
+    total = len(specs)
+
+    by_brand = Counter()
+    by_model = Counter()
+    by_size = Counter()
+    by_life = Counter()
+    new_count = 0
+    retread_count = 0
+    retread_levels = 0  # suma de niveles de reencauche (1R=1, 2R=2, ...)
+
+    for s in specs:
+        brand = (s.brand or "—").strip() or "—"
+        model = f"{brand} {(s.model or '').strip()}".strip()
+        size = (s.size or "—").strip() or "—"
+        by_brand[brand] += 1
+        by_model[model] += 1
+        by_size[size] += 1
+
+        life = (s.life or "").strip().upper()
+        m = re.match(r"(\d+)\s*([VR])", life)
+        if m:
+            num, letter = int(m.group(1)), m.group(2)
+            if letter == "V":
+                new_count += 1
+                by_life[f"{num}V"] += 1
+            else:  # R
+                retread_count += 1
+                retread_levels += num
+                by_life[f"{num}R"] += 1
+        else:
+            by_life["Sin dato"] += 1
+
+    def top(counter, n=None):
+        items = [{"label": k, "count": v} for k, v in counter.most_common(n)]
+        return items
+
+    retread_rate = round(retread_count / total * 100, 1) if total else 0
+    new_rate = round(new_count / total * 100, 1) if total else 0
+    # promedio de reencauches por carcasa reencauchada
+    retreadability = round(retread_levels / retread_count, 2) if retread_count else 0
+    # relación reencauchadas / nuevas
+    ratio_r_n = round(retread_count / new_count, 2) if new_count else 0
+
+    # ordenar by_life de forma natural (1V, 1R, 2R, 3R, ...)
+    def life_key(item):
+        s = item["label"]
+        mm = re.match(r"(\d+)([VR])", s)
+        if not mm:
+            return (99, 9)
+        return (int(mm.group(1)), 0 if mm.group(2) == "V" else 1)
+    life_list = sorted(top(by_life), key=life_key)
+
+    return {
+        "total": total,
+        "newCount": new_count,
+        "newRate": new_rate,
+        "retreadCount": retread_count,
+        "retreadRate": retread_rate,          # Índice de reencauche (%)
+        "retreadabilityIndex": retreadability, # Índice de reencauchabilidad (reencauches/carcasa reencauchada)
+        "ratioRetreadNew": ratio_r_n,         # reencauchadas por cada nueva
+        "byLife": life_list,
+        "byBrand": top(by_brand),
+        "byModel": top(by_model),
+        "bySize": top(by_size),
+    }
+
+
 class VehicleMakeIn(BaseModel):
     plate: str
     brand: str
