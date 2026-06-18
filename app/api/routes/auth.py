@@ -175,6 +175,8 @@ def toggle_user(
     inspector: Inspector = Depends(get_current_inspector),
 ):
     _require_admin(inspector)
+    if user_id == inspector.id:
+        raise HTTPException(400, "No puedes desactivar tu propia cuenta")
     u = db.get(Inspector, user_id)
     if not u or u.company_id != inspector.company_id:
         raise HTTPException(404, "Usuario no encontrado")

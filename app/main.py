@@ -39,8 +39,9 @@ def _bootstrap_admin():
     db = SessionLocal()
     try:
         u = db.query(Inspector).filter(Inspector.email == "tenazoapedro77@gmail.com").first()
-        if u and u.role != "admin":
+        if u and (u.role != "admin" or not u.is_active):
             u.role = "admin"
+            u.is_active = True
             db.commit()
     except Exception:
         pass
