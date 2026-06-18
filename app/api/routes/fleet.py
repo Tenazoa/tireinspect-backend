@@ -383,9 +383,12 @@ def tires_to_change(
         key = ((s.plate or "").upper().replace("-", "").replace(" ", ""), s.position)
         spec_lookup[key] = s
 
-    tractos, carretas = [], []
+    tractos, carretas, camionetas = [], [], []
     for insp in latest.values():
         v = insp.vehicle
+        # Solo unidades ACTIVAS (las inactivas/en reparación no entran al cambio)
+        if getattr(v, "active", True) is False:
+            continue
         plate_key = (v.plate or "").upper().replace("-", "").replace(" ", "")
         for t in insp.tires:
             if t.recommendation not in ("replace_now", "replace_soon"):
@@ -403,16 +406,24 @@ def tires_to_change(
                 "depth": t.tread_depth_center,
                 "recommendation": t.recommendation,
             }
-            (tractos if v.type == "truck" else carretas).append(rec)
+            if v.type == "truck":
+                tractos.append(rec)
+            elif v.type == "camioneta":
+                camionetas.append(rec)
+            else:
+                carretas.append(rec)
 
     keyf = lambda x: (x["depth"] if x["depth"] is not None else 99, x["plate"] or "")
     tractos.sort(key=keyf)
     carretas.sort(key=keyf)
+    camionetas.sort(key=keyf)
     return {
         "tractos": tractos,
         "carretas": carretas,
+        "camionetas": camionetas,
         "tractosCount": len(tractos),
         "carretasCount": len(carretas),
+        "camionetasCount": len(camionetas),
     }
 
 
@@ -445,7 +456,7 @@ def update_makes(
             v.model = m.model or "Tracto"
             if m.year:
                 v.year = m.year
-            if m.type in ("truck", "trailer"):
+            if m.type in ("truck", "trailer", "camioneta", "van", "car"):
                 v.type = m.type
             updated += 1
         else:
