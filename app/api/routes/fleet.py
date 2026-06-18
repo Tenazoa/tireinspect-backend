@@ -359,6 +359,7 @@ class VehicleMakeIn(BaseModel):
     plate: str
     brand: str
     model: Optional[str] = "Tracto"
+    year: Optional[int] = None
 
 
 class MakesImportIn(BaseModel):
@@ -375,11 +376,13 @@ def update_makes(
     updated = 0
     not_found = []
     for m in body.makes:
-        plate = m.plate.strip().upper()
+        plate = m.plate.strip().upper().replace("-", "").replace(" ", "")
         v = db.query(Vehicle).filter(Vehicle.plate == plate).first()
         if v:
             v.brand = m.brand
             v.model = m.model or "Tracto"
+            if m.year:
+                v.year = m.year
             updated += 1
         else:
             not_found.append(plate)
