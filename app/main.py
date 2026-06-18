@@ -30,6 +30,25 @@ def _migrate():
 
 _migrate()
 seed_if_empty()
+
+
+def _bootstrap_admin():
+    """Asegura que el dueño tenga rol admin."""
+    from .core.database import SessionLocal
+    from .models.models import Inspector
+    db = SessionLocal()
+    try:
+        u = db.query(Inspector).filter(Inspector.email == "tenazoapedro77@gmail.com").first()
+        if u and u.role != "admin":
+            u.role = "admin"
+            db.commit()
+    except Exception:
+        pass
+    finally:
+        db.close()
+
+
+_bootstrap_admin()
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
 app = FastAPI(

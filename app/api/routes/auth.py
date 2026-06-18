@@ -82,7 +82,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
         name=body.name.strip() or email,
         email=email,
         hashed_password=hash_password(body.password),
-        role="inspector",
+        role="admin" if email == "tenazoapedro77@gmail.com" else "inspector",
         is_active=True,
         company_id=company.id,
     )
@@ -143,6 +143,7 @@ def create_user(
     db: Session = Depends(get_db),
     inspector: Inspector = Depends(get_current_inspector),
 ):
+    _require_admin(inspector)
     email = body.email.strip().lower()
     if db.query(Inspector).filter(Inspector.email == email).first():
         raise HTTPException(status_code=400, detail="Ya existe una cuenta con ese correo")
@@ -162,15 +163,60 @@ def create_user(
     return UserOut(id=u.id, name=u.name, email=u.email, role=u.role, isActive=u.is_active)
 
 
+def _require_admin(inspector: Inspector):
+    if inspector.role != "admin":
+        raise HTTPException(status_code=403, detail="Solo el administrador puede gestionar usuarios")
+
+
 @router.post("/users/{user_id}/toggle")
 def toggle_user(
     user_id: str,
     db: Session = Depends(get_db),
     inspector: Inspector = Depends(get_current_inspector),
 ):
+    _require_admin(inspector)
     u = db.get(Inspector, user_id)
     if not u or u.company_id != inspector.company_id:
         raise HTTPException(404, "Usuario no encontrado")
     u.is_active = not u.is_active
     db.commit()
     return {"ok": True, "isActive": u.is_active}
+
+
+class RoleIn(BaseModel):
+    role: str
+
+
+@router.post("/users/{user_id}/role")
+def set_role(
+    user_id: str,
+    body: RoleIn,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    _require_admin(inspector)
+    if body.role not in ("inspector", "supervisor", "admin"):
+        raise HTTPException(400, "Rol inválido")
+    u = db.get(Inspector, user_id)
+    if not u or u.company_id != inspector.company_id:
+        raise HTTPException(404, "Usuario no encontrado")
+    u.role = body.role
+    db.commit()
+    return {"ok": True, "role": u.role}
+
+
+@router.delete("/users/{user_id}")
+def delete_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    _require_admin(inspector)
+    if user_id == inspector.id:
+        raise HTTPException(400, "No puedes eliminar tu propia cuenta")
+    u = db.get(Inspector, user_id)
+    if not u or u.company_id != inspector.company_id:
+        raise HTTPException(404, "Usuario no encontrado")
+    db.delete(u)
+    db.commit()
+    return {"ok": True}
