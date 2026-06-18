@@ -136,5 +136,7 @@ class TireSpec(Base):
     last_depth_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
     code: Mapped[str | None] = mapped_column(String, nullable=True)
     life: Mapped[str | None] = mapped_column(String, nullable=True)
+    km_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    km_life: Mapped[float | None] = mapped_column(Float, nullable=True)
     vehicle_type: Mapped[str | None] = mapped_column(String, nullable=True)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)

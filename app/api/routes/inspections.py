@@ -222,6 +222,8 @@ def inspection_detail(
             "recommendation": t.recommendation,
             "code": (sp.code if sp else None) or t.dot_code,
             "life": sp.life if sp else None,
+            "kmTotal": sp.km_total if sp else None,
+            "kmLife": sp.km_life if sp else None,
             "pressurePsi": t.pressure_psi,
             "notes": t.notes,
         })
@@ -494,6 +496,8 @@ def dashboard(
                 "rec": rec,
                 "code": (spec.code if spec else None) or t.dot_code,
                 "life": spec.life if spec else None,
+                "kmTotal": spec.km_total if spec else None,
+                "kmLife": spec.km_life if spec else None,
             })
 
         avg = round(sum(depths) / len(depths), 1) if depths else None

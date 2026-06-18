@@ -155,9 +155,22 @@ async def upload_solomon(
         vida = c(b.get("Vida"))
         codigo = c(b.get("Codigo"))
         tipo = c(b.get("Ubicación")) or c(b.get("T.Unidad"))
+
+        def num(col):
+            try:
+                return float(b.get(col)) if pd.notna(b.get(col)) else None
+            except Exception:
+                return None
+        km_total = num("KMTotal")
+        # km de la vida actual: 1V->KM1, 1R->KM2, 2R->KM3, 3R->KM4
+        vu = vida.upper()
+        km_col = {"1V": "KM1", "1R": "KM2", "2R": "KM3", "3R": "KM4"}.get(vu)
+        km_life = num(km_col) if km_col else None
+
         rec = {
             "plate": plate, "position": pos, "brand": marca, "model": modelo,
             "size": medida, "lastDepthMm": cocada, "code": codigo, "life": vida,
+            "kmTotal": km_total, "kmLife": km_life,
         }
         fleet.setdefault(plate, {"type": tipo, "tires": {}})["tires"][pos] = rec
         if codigo:
@@ -205,13 +218,14 @@ async def upload_solomon(
             vehicles_created += 1
         else:
             vehicle.tire_positions = positions
-            vehicle.type = vtype
+            # conservar el tipo ya asignado (tracto/carreta/camioneta); no sobre-escribir
         db.query(TireSpec).filter(TireSpec.plate == plate).delete()
         for pos, t in v["tires"].items():
             db.add(TireSpec(
                 id=str(uuid.uuid4()), plate=plate, position=pos,
                 brand=t["brand"], model=t["model"], size=t["size"],
                 last_depth_mm=t["lastDepthMm"], code=t["code"], life=t["life"],
+                km_total=t.get("kmTotal"), km_life=t.get("kmLife"),
                 vehicle_type=vtype, company_id=company_id,
             ))
             specs_created += 1
