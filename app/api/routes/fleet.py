@@ -355,6 +355,66 @@ def set_status(
     return {"ok": True, "updated": updated, "notFoundCount": len(not_found), "notFound": not_found[:30]}
 
 
+@router.get("/stats/performance")
+def fleet_performance(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """
+    Rendimiento de neumáticos (vista gerencial): mejores marcas/modelos y mejores
+    unidades según remanente promedio (mm) y durabilidad (reencauches alcanzados).
+    """
+    import re
+    specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
+
+    def agg():
+        return {"sum": 0.0, "n": 0, "crit": 0, "retreads": 0, "lifes": 0}
+
+    by_brand, by_model, by_plate = {}, {}, {}
+    for s in specs:
+        d = s.last_depth_mm
+        brand = (s.brand or "—").strip() or "—"
+        model = f"{brand} {(s.model or '').strip()}".strip()
+        plate = s.plate
+        life = (s.life or "").strip().upper()
+        m = re.match(r"(\d+)([VR])", life)
+        retread_lvl = int(m.group(1)) if (m and m.group(2) == "R") else 0
+        for key, store in ((brand, by_brand), (model, by_model), (plate, by_plate)):
+            a = store.setdefault(key, agg())
+            if d is not None:
+                a["sum"] += d; a["n"] += 1
+                if d < 4: a["crit"] += 1
+            a["lifes"] += 1
+            a["retreads"] += retread_lvl
+
+    def rows(store, min_n):
+        out = []
+        for k, a in store.items():
+            if a["n"] < min_n:
+                continue
+            out.append({
+                "label": k, "count": a["n"],
+                "avgDepth": round(a["sum"] / a["n"], 1) if a["n"] else 0,
+                "criticalPct": round(a["crit"] / a["n"] * 100) if a["n"] else 0,
+                "avgRetread": round(a["retreads"] / a["lifes"], 2) if a["lifes"] else 0,
+            })
+        return out
+
+    brands = sorted(rows(by_brand, 20), key=lambda x: x["avgDepth"], reverse=True)
+    models = sorted(rows(by_model, 10), key=lambda x: x["avgDepth"], reverse=True)
+    plates = sorted(rows(by_plate, 4), key=lambda x: x["avgDepth"], reverse=True)
+    durable = sorted(rows(by_brand, 20), key=lambda x: x["avgRetread"], reverse=True)
+
+    return {
+        "bestBrands": brands[:10],
+        "worstBrands": brands[::-1][:5],
+        "bestModels": models[:10],
+        "bestVehicles": plates[:10],
+        "attentionVehicles": plates[::-1][:10],
+        "mostDurableBrands": durable[:6],
+    }
+
+
 @router.get("/stats/fleet")
 def fleet_vehicle_stats(
     db: Session = Depends(get_db),
