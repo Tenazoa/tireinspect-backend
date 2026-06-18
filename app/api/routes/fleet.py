@@ -536,6 +536,8 @@ def tires_to_change(
                 "size": t.size,
                 "code": (sp.code if sp else None) or t.dot_code,
                 "life": sp.life if sp else None,
+                "kmLife": sp.km_life if sp else None,
+                "kmTotal": sp.km_total if sp else None,
                 "depth": t.tread_depth_center,
                 "recommendation": t.recommendation,
             }
