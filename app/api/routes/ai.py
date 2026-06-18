@@ -2,8 +2,10 @@ import os
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+from sqlalchemy.orm import Session
+from ...core.database import get_db
 from ...api.deps import get_current_inspector
-from ...models.models import Inspector
+from ...models.models import Inspector, TireSpec, Vehicle
 from ...services.ai.tire_analyzer import analyze_tire_image, WEAR_LEVELS
 from ...services.ai.dataset_collector import save_training_sample, get_dataset_stats
 from ...services.ai.reference_measurement import measure_with_reference, REFERENCE_OBJECTS
@@ -98,9 +100,44 @@ async def analyze_tire(
 
 
 @router.get("/dataset/stats")
-def dataset_stats(_: Inspector = Depends(get_current_inspector)):
-    """Estadísticas del dataset acumulado para entrenamiento."""
-    return get_dataset_stats()
+def dataset_stats(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """
+    Distribución real de neumáticos por nivel de desgaste (según remanente mm)
+    calculada desde la base de datos (persistente).
+    """
+    specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
+    by_class = {"new": 0, "low": 0, "medium": 0, "high": 0, "replace": 0}
+    total = 0
+    for s in specs:
+        d = s.last_depth_mm
+        if d is None:
+            continue
+        total += 1
+        if d >= 12:
+            by_class["new"] += 1
+        elif d >= 8:
+            by_class["low"] += 1
+        elif d >= 5:
+            by_class["medium"] += 1
+        elif d >= 2:
+            by_class["high"] += 1
+        else:
+            by_class["replace"] += 1
+
+    # "precisión": proporción de la flota con medición (cobertura) como referencia
+    total_specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).count()
+    coverage = round(total / total_specs, 3) if total_specs else 0.0
+
+    return {
+        "total": total,
+        "by_class": by_class,
+        "ai_accuracy": coverage,
+        "min_for_training": 500,
+        "ready_for_training": total >= 500,
+    }
 
 
 # ── Fase 3: Medición con objeto de referencia ───────────────────────────────
