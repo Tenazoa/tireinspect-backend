@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection
 from ...api.deps import get_current_inspector
 
 router = APIRouter(prefix="/fleet", tags=["fleet"])
@@ -355,11 +355,73 @@ def set_status(
     return {"ok": True, "updated": updated, "notFoundCount": len(not_found), "notFound": not_found[:30]}
 
 
+@router.get("/tires-to-change")
+def tires_to_change(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """
+    Lista de llantas que requieren cambio (urgente o próximo), separadas por
+    tractos y carretas, según la última inspección de cada unidad.
+    """
+    from .inspections import position_label
+
+    inspections = (
+        db.query(Inspection).join(Vehicle)
+        .filter(Vehicle.company_id == inspector.company_id).all()
+    )
+    latest = {}
+    nowmin = __import__("datetime").datetime.min
+    for i in inspections:
+        cur = latest.get(i.vehicle_id)
+        if cur is None or (i.created_at or nowmin) > (cur.created_at or nowmin):
+            latest[i.vehicle_id] = i
+
+    specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
+    spec_lookup = {}
+    for s in specs:
+        key = ((s.plate or "").upper().replace("-", "").replace(" ", ""), s.position)
+        spec_lookup[key] = s
+
+    tractos, carretas = [], []
+    for insp in latest.values():
+        v = insp.vehicle
+        plate_key = (v.plate or "").upper().replace("-", "").replace(" ", "")
+        for t in insp.tires:
+            if t.recommendation not in ("replace_now", "replace_soon"):
+                continue
+            sp = spec_lookup.get((plate_key, t.position))
+            rec = {
+                "plate": v.plate,
+                "vehicle": f"{v.brand} {v.model} {v.year or ''}".strip(),
+                "position": position_label(t.position),
+                "brand": t.brand,
+                "model": t.model,
+                "size": t.size,
+                "code": (sp.code if sp else None) or t.dot_code,
+                "life": sp.life if sp else None,
+                "depth": t.tread_depth_center,
+                "recommendation": t.recommendation,
+            }
+            (tractos if v.type == "truck" else carretas).append(rec)
+
+    keyf = lambda x: (x["depth"] if x["depth"] is not None else 99, x["plate"] or "")
+    tractos.sort(key=keyf)
+    carretas.sort(key=keyf)
+    return {
+        "tractos": tractos,
+        "carretas": carretas,
+        "tractosCount": len(tractos),
+        "carretasCount": len(carretas),
+    }
+
+
 class VehicleMakeIn(BaseModel):
     plate: str
     brand: str
     model: Optional[str] = "Tracto"
     year: Optional[int] = None
+    type: Optional[str] = None  # 'truck' (tracto) | 'trailer' (carreta)
 
 
 class MakesImportIn(BaseModel):
@@ -383,6 +445,8 @@ def update_makes(
             v.model = m.model or "Tracto"
             if m.year:
                 v.year = m.year
+            if m.type in ("truck", "trailer"):
+                v.type = m.type
             updated += 1
         else:
             not_found.append(plate)
