@@ -311,6 +311,20 @@ def fleet_analytics(
     }
 
 
+@router.get("/debug/companies")
+def debug_companies(db: Session = Depends(get_db), _: Inspector = Depends(get_current_inspector)):
+    from ...models.models import Company
+    out = []
+    for c in db.query(Company).all():
+        vs = db.query(Vehicle).filter(Vehicle.company_id == c.id).all()
+        inactive = sum(1 for v in vs if getattr(v, "active", True) is False)
+        users = db.query(Inspector).filter(Inspector.company_id == c.id).count()
+        out.append({"company": c.name, "id": c.id, "vehicles": len(vs), "inactive": inactive, "users": users})
+    # vehiculos sin empresa
+    orphan = db.query(Vehicle).filter(Vehicle.company_id.is_(None)).count()
+    return {"companies": out, "orphanVehicles": orphan, "totalVehicles": db.query(Vehicle).count()}
+
+
 class VehicleStatusIn(BaseModel):
     plate: str
     active: bool
