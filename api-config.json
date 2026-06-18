@@ -1,4 +1,3 @@
 {
-  "apiUrl": "https://tireinspect-backend.onrender.com",
-  "note": "URL permanente del backend en Render. El APK lee esto al arrancar."
+  "apiUrl": "https://tireinspect-backend.onrender.com"
 }
