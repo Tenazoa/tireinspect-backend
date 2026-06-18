@@ -355,6 +355,65 @@ def set_status(
     return {"ok": True, "updated": updated, "notFoundCount": len(not_found), "notFound": not_found[:30]}
 
 
+@router.get("/stats/fleet")
+def fleet_vehicle_stats(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Estadísticas de unidades: por tipo, tractos por año/modelo, carretas por tipo, activos/inactivos."""
+    from collections import Counter
+    vs = db.query(Vehicle).filter(Vehicle.company_id == inspector.company_id).all()
+
+    def active(v):
+        return getattr(v, "active", True) is not False
+
+    total = len(vs)
+    active_count = sum(1 for v in vs if active(v))
+
+    by_type = {}
+    for v in vs:
+        t = v.type or "otro"
+        d = by_type.setdefault(t, {"type": t, "total": 0, "active": 0, "inactive": 0})
+        d["total"] += 1
+        d["active" if active(v) else "inactive"] += 1
+
+    tractos = [v for v in vs if v.type == "truck"]
+    carretas = [v for v in vs if v.type == "trailer"]
+    camionetas = [v for v in vs if v.type == "camioneta"]
+
+    def top(counter):
+        return [{"label": str(k), "count": v} for k, v in counter.most_common()]
+
+    tractos_year = Counter(str(v.year) if v.year else "Sin año" for v in tractos)
+    tractos_model = Counter(f"{v.brand} {v.model}".strip() for v in tractos)
+    carretas_type = Counter((v.brand or "—").strip() for v in carretas)
+    carretas_year = Counter(str(v.year) if v.year else "Sin año" for v in carretas)
+
+    def sort_year(items):
+        return sorted(items, key=lambda x: (x["label"] == "Sin año", x["label"]))
+
+    return {
+        "total": total,
+        "active": active_count,
+        "inactive": total - active_count,
+        "byType": [
+            {"label": {"truck": "Tractos", "trailer": "Carretas", "camioneta": "Camionetas", "van": "Furgones", "car": "Autos"}.get(k, k),
+             "type": k, **{kk: vv for kk, vv in d.items() if kk != "type"}}
+            for k, d in by_type.items()
+        ],
+        "tractosTotal": len(tractos),
+        "tractosActive": sum(1 for v in tractos if active(v)),
+        "carretasTotal": len(carretas),
+        "carretasActive": sum(1 for v in carretas if active(v)),
+        "camionetasTotal": len(camionetas),
+        "camionetasActive": sum(1 for v in camionetas if active(v)),
+        "tractosByYear": sort_year(top(tractos_year)),
+        "tractosByModel": top(tractos_model),
+        "carretasByType": top(carretas_type),
+        "carretasByYear": sort_year(top(carretas_year)),
+    }
+
+
 @router.get("/tires-to-change")
 def tires_to_change(
     db: Session = Depends(get_db),

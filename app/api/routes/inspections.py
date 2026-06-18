@@ -433,10 +433,12 @@ def dashboard(
         .all()
     )
 
-    # última inspección por vehículo
+    # última inspección por vehículo (solo unidades ACTIVAS)
     now_min = datetime.min
     latest: dict[str, Inspection] = {}
     for i in inspections:
+        if getattr(i.vehicle, "active", True) is False:
+            continue
         cur = latest.get(i.vehicle_id)
         if cur is None or (i.created_at or now_min) > (cur.created_at or now_min):
             latest[i.vehicle_id] = i
