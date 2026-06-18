@@ -9,6 +9,26 @@ from .api.routes import auth, vehicles, inspections, photos, ai, fleet
 
 # Crear tablas al iniciar y sembrar datos demo si está vacía (útil en la nube)
 Base.metadata.create_all(bind=engine)
+
+
+def _migrate():
+    """Migraciones idempotentes para columnas nuevas en tablas existentes."""
+    from sqlalchemy import text
+    dialect = engine.dialect.name
+    stmts = []
+    if dialect == "postgresql":
+        stmts.append("ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE")
+    else:  # sqlite u otros: intentar y tolerar si ya existe
+        stmts.append("ALTER TABLE vehicles ADD COLUMN active BOOLEAN DEFAULT 1")
+    with engine.begin() as conn:
+        for s in stmts:
+            try:
+                conn.execute(text(s))
+            except Exception:
+                pass
+
+
+_migrate()
 seed_if_empty()
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 

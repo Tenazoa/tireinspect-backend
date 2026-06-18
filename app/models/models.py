@@ -55,6 +55,7 @@ class Vehicle(Base):
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     last_inspection: Mapped[datetime | None] = mapped_column(nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     company: Mapped["Company | None"] = relationship(back_populates="vehicles")
     inspections: Mapped[list["Inspection"]] = relationship(back_populates="vehicle")

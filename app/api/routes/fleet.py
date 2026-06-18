@@ -311,6 +311,36 @@ def fleet_analytics(
     }
 
 
+class VehicleStatusIn(BaseModel):
+    plate: str
+    active: bool
+
+
+class StatusImportIn(BaseModel):
+    items: list[VehicleStatusIn]
+
+
+@router.post("/set-status")
+def set_status(
+    body: StatusImportIn,
+    db: Session = Depends(get_db),
+    _: Inspector = Depends(get_current_inspector),
+):
+    """Marca vehículos como activos/inactivos por placa (SITUACIONAL FLOTA)."""
+    updated = 0
+    not_found = []
+    for it in body.items:
+        plate = it.plate.strip().upper().replace("-", "").replace(" ", "")
+        v = db.query(Vehicle).filter(Vehicle.plate == plate).first()
+        if v:
+            v.active = it.active
+            updated += 1
+        else:
+            not_found.append(plate)
+    db.commit()
+    return {"ok": True, "updated": updated, "notFoundCount": len(not_found), "notFound": not_found[:30]}
+
+
 class VehicleMakeIn(BaseModel):
     plate: str
     brand: str

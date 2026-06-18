@@ -109,3 +109,68 @@ def change_password(
 @router.get("/me", response_model=InspectorOut)
 def me(inspector: Inspector = Depends(get_current_inspector)):
     return to_out(inspector)
+
+
+# ── Gestión de usuarios ──────────────────────────────────────────────────────
+
+class UserOut(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: str
+    isActive: bool
+
+
+class CreateUserIn(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    role: str = "inspector"
+
+
+@router.get("/users", response_model=list[UserOut])
+def list_users(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    users = db.query(Inspector).filter(Inspector.company_id == inspector.company_id).all()
+    return [UserOut(id=u.id, name=u.name, email=u.email, role=u.role, isActive=u.is_active) for u in users]
+
+
+@router.post("/users", response_model=UserOut)
+def create_user(
+    body: CreateUserIn,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    email = body.email.strip().lower()
+    if db.query(Inspector).filter(Inspector.email == email).first():
+        raise HTTPException(status_code=400, detail="Ya existe una cuenta con ese correo")
+    if len(body.password) < 6:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 6 caracteres")
+    u = Inspector(
+        id=str(uuid.uuid4()),
+        name=body.name.strip() or email,
+        email=email,
+        hashed_password=hash_password(body.password),
+        role=body.role if body.role in ("inspector", "supervisor", "admin") else "inspector",
+        is_active=True,
+        company_id=inspector.company_id,
+    )
+    db.add(u)
+    db.commit()
+    return UserOut(id=u.id, name=u.name, email=u.email, role=u.role, isActive=u.is_active)
+
+
+@router.post("/users/{user_id}/toggle")
+def toggle_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    u = db.get(Inspector, user_id)
+    if not u or u.company_id != inspector.company_id:
+        raise HTTPException(404, "Usuario no encontrado")
+    u.is_active = not u.is_active
+    db.commit()
+    return {"ok": True, "isActive": u.is_active}
