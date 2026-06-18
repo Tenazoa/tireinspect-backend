@@ -23,6 +23,7 @@ class VehicleOut(BaseModel):
     ownerCompany: Optional[str]
     createdAt: str
     lastInspection: Optional[str]
+    active: bool = True
 
     class Config:
         from_attributes = True
@@ -53,6 +54,7 @@ def vehicle_to_out(v: Vehicle) -> VehicleOut:
         ownerCompany=v.company.name if v.company else None,
         createdAt=v.created_at.isoformat(),
         lastInspection=v.last_inspection.isoformat() if v.last_inspection else None,
+        active=getattr(v, "active", True) if getattr(v, "active", True) is not None else True,
     )
 
 
