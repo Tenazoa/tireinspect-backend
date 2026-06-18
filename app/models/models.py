@@ -119,6 +119,16 @@ class TirePhoto(Base):
     tire: Mapped["TireInspection"] = relationship(back_populates="photos")
 
 
+class PhotoBlob(Base):
+    """Imagen de inspección guardada en la BD (persiste en Supabase)."""
+    __tablename__ = "photo_blobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    content_type: Mapped[str] = mapped_column(String, default="image/jpeg")
+    data: Mapped[str] = mapped_column(Text, nullable=False)  # base64
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
 class TireSpec(Base):
     """
     Catálogo de llantas por placa+posición (datos de SOLOMON).

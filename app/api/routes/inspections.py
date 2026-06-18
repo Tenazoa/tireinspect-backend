@@ -14,6 +14,15 @@ from ...services.pdf_report import generate_inspection_pdf, position_label
 router = APIRouter(prefix="/inspections", tags=["inspections"])
 
 
+def default_pressure(vehicle_type: Optional[str], position: Optional[str]) -> Optional[float]:
+    """Presión recomendada (PSI): tracto 115 delanteras / 120 posteriores; carreta 129."""
+    if vehicle_type == "truck":
+        return 115.0 if position in ("P01", "P02") else 120.0
+    if vehicle_type == "trailer":
+        return 129.0
+    return None
+
+
 def rec_for(depth: Optional[float]) -> str:
     """Recomendación según remanente (mm) de la última inspección."""
     if depth is None:
@@ -224,7 +233,8 @@ def inspection_detail(
             "life": sp.life if sp else None,
             "kmTotal": sp.km_total if sp else None,
             "kmLife": sp.km_life if sp else None,
-            "pressurePsi": t.pressure_psi,
+            "pressurePsi": t.pressure_psi or default_pressure(v.type, t.position),
+            "photos": [p.url for p in t.photos],
             "notes": t.notes,
         })
     date = insp.completed_at or insp.created_at

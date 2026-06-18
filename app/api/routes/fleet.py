@@ -608,6 +608,17 @@ class TireSpecOut(BaseModel):
     lastDepthMm: Optional[float]
     code: Optional[str]
     life: Optional[str]
+    kmTotal: Optional[float] = None
+    kmLife: Optional[float] = None
+    pressurePsi: Optional[float] = None
+
+
+def _pressure(vehicle_type: Optional[str], position: str) -> Optional[float]:
+    if vehicle_type == "truck":
+        return 115.0 if position in ("P01", "P02") else 120.0
+    if vehicle_type == "trailer":
+        return 129.0
+    return None
 
 
 @router.get("/{plate}", response_model=list[TireSpecOut])
@@ -616,10 +627,13 @@ def get_fleet_tires(
     db: Session = Depends(get_db),
     _: Inspector = Depends(get_current_inspector),
 ):
-    """Autollenado: llantas conocidas de una placa (marca/modelo/medida/última cocada)."""
+    """Autollenado: llantas conocidas de una placa (marca/modelo/medida/última cocada/presión)."""
+    p = plate.strip().upper().replace("-", "").replace(" ", "")
+    vehicle = db.query(Vehicle).filter(Vehicle.plate == p).first()
+    vtype = vehicle.type if vehicle else None
     specs = (
         db.query(TireSpec)
-        .filter(TireSpec.plate == plate.strip().upper())
+        .filter(TireSpec.plate == p)
         .order_by(TireSpec.position)
         .all()
     )
@@ -627,6 +641,8 @@ def get_fleet_tires(
         TireSpecOut(
             position=s.position, brand=s.brand, model=s.model, size=s.size,
             lastDepthMm=s.last_depth_mm, code=s.code, life=s.life,
+            kmTotal=s.km_total, kmLife=s.km_life,
+            pressurePsi=_pressure(vtype, s.position),
         )
         for s in specs
     ]
