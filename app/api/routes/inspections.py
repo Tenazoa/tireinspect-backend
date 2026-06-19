@@ -29,6 +29,24 @@ def tire_min_depth(t) -> Optional[float]:
     return min(vals) if vals else None
 
 
+def recommend(depth: Optional[float], vehicle_type: Optional[str] = None, position: Optional[str] = None) -> str:
+    """
+    Umbrales TYMSAC:
+      - Cambio urgente: delanteras (tracto P01/P02) <=5mm; posteriores y carretas <=3mm
+      - Cambio próximo: hasta <6mm (rango 4-6)
+      - Óptimo: >=6mm
+    """
+    if depth is None:
+        return "ok"
+    front = (vehicle_type == "truck") and (position in ("P01", "P02"))
+    crit = 5.0 if front else 3.0
+    if depth <= crit:
+        return "replace_now"
+    if depth < 6.0:
+        return "replace_soon"
+    return "ok"
+
+
 def rec_for(depth: Optional[float]) -> str:
     """Recomendación según remanente (mm) de la última inspección."""
     if depth is None:
@@ -427,7 +445,7 @@ def seed_from_specs(
                 size=s.size,
                 dot_code=s.code,
                 tread_depth_center=depth,
-                recommendation=rec_for(depth),
+                recommendation=recommend(depth, v.type, s.position),
                 inspected_at=when,
             )
             db.add(tire)
@@ -489,7 +507,7 @@ def dashboard(
         worst = "ok"
         for t in sorted(insp.tires, key=lambda x: x.position or ""):
             depth = tire_min_depth(t)
-            rec = t.recommendation or rec_for(depth)
+            rec = recommend(depth, v.type, t.position)
             if depth is not None:
                 depths.append(depth)
                 all_depths.append(depth)
