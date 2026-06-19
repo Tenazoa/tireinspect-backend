@@ -617,7 +617,7 @@ def _pressure(vehicle_type: Optional[str], position: str) -> Optional[float]:
     if vehicle_type == "truck":
         return 115.0 if position in ("P01", "P02") else 120.0
     if vehicle_type == "trailer":
-        return 129.0
+        return 120.0
     return None
 
 
