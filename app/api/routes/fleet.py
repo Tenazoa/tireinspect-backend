@@ -497,7 +497,7 @@ def tires_to_change(
     Lista de llantas que requieren cambio (urgente o próximo), separadas por
     tractos y carretas, según la última inspección de cada unidad.
     """
-    from .inspections import position_label
+    from .inspections import position_label, tire_min_depth
 
     inspections = (
         db.query(Inspection).join(Vehicle)
@@ -538,7 +538,7 @@ def tires_to_change(
                 "life": sp.life if sp else None,
                 "kmLife": sp.km_life if sp else None,
                 "kmTotal": sp.km_total if sp else None,
-                "depth": t.tread_depth_center,
+                "depth": tire_min_depth(t),
                 "recommendation": t.recommendation,
             }
             if v.type == "truck":

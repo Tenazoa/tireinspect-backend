@@ -23,6 +23,12 @@ def default_pressure(vehicle_type: Optional[str], position: Optional[str]) -> Op
     return None
 
 
+def tire_min_depth(t) -> Optional[float]:
+    """Profundidad representativa = la MENOR de las 3 zonas (la más desgastada)."""
+    vals = [v for v in (t.tread_depth_inner, t.tread_depth_center, t.tread_depth_outer) if v is not None]
+    return min(vals) if vals else None
+
+
 def rec_for(depth: Optional[float]) -> str:
     """Recomendación según remanente (mm) de la última inspección."""
     if depth is None:
@@ -227,7 +233,10 @@ def inspection_detail(
             "brand": t.brand,
             "model": t.model,
             "size": t.size,
-            "depth": t.tread_depth_center,
+            "depth": tire_min_depth(t),
+            "depthInner": t.tread_depth_inner,
+            "depthCenter": t.tread_depth_center,
+            "depthOuter": t.tread_depth_outer,
             "recommendation": t.recommendation,
             "code": (sp.code if sp else None) or t.dot_code,
             "life": sp.life if sp else None,
@@ -479,7 +488,7 @@ def dashboard(
         depths = []
         worst = "ok"
         for t in sorted(insp.tires, key=lambda x: x.position or ""):
-            depth = t.tread_depth_center
+            depth = tire_min_depth(t)
             rec = t.recommendation or rec_for(depth)
             if depth is not None:
                 depths.append(depth)
