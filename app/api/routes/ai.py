@@ -20,6 +20,9 @@ class TireAnalysisOut(BaseModel):
     confidence: float
     condition_score: int
     estimated_depth_mm: float
+    depth_inner_mm: float = 0.0
+    depth_center_mm: float = 0.0
+    depth_outer_mm: float = 0.0
     wear_pattern: str
     pattern_confidence: float
     defects: list[str]
@@ -91,6 +94,9 @@ async def analyze_tire(
         confidence=result.confidence,
         condition_score=result.condition_score,
         estimated_depth_mm=result.estimated_depth_mm,
+        depth_inner_mm=result.depth_inner_mm,
+        depth_center_mm=result.depth_center_mm,
+        depth_outer_mm=result.depth_outer_mm,
         wear_pattern=result.wear_pattern,
         pattern_confidence=result.pattern_confidence,
         defects=result.defects,

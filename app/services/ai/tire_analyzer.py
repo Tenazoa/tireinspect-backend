@@ -25,7 +25,10 @@ class TireAnalysisResult:
     wear_level: str          # new | low | medium | high | replace
     confidence: float        # 0.0 - 1.0
     condition_score: int     # 0-100 (100 = llanta nueva)
-    estimated_depth_mm: float  # estimación de profundidad en mm
+    estimated_depth_mm: float  # estimación de profundidad en mm (centro)
+    depth_inner_mm: float = 0.0   # lado interior
+    depth_center_mm: float = 0.0  # centro
+    depth_outer_mm: float = 0.0   # lado exterior
 
     # Patrón de desgaste
     wear_pattern: str        # uniform | center | edge_both | edge_inner | edge_outer | cupping | diagonal
@@ -100,6 +103,9 @@ def analyze_tire_image(image_bytes: bytes) -> TireAnalysisResult:
         # Profundidad estimada (interpolación lineal desde score)
         estimated_depth = _score_to_depth(condition_score)
 
+        # Profundidad por zona (interior / centro / exterior) según textura de cada tercio
+        d_in, d_ce, d_ou = _zone_depths(roi, estimated_depth)
+
         notes = _build_notes(wear_level, wear_pattern, defects, texture_score, color_score)
 
         return TireAnalysisResult(
@@ -107,6 +113,9 @@ def analyze_tire_image(image_bytes: bytes) -> TireAnalysisResult:
             confidence=round(confidence, 2),
             condition_score=condition_score,
             estimated_depth_mm=round(estimated_depth, 1),
+            depth_inner_mm=d_in,
+            depth_center_mm=d_ce,
+            depth_outer_mm=d_ou,
             wear_pattern=wear_pattern,
             pattern_confidence=round(pattern_conf, 2),
             defects=defects,
@@ -119,6 +128,31 @@ def analyze_tire_image(image_bytes: bytes) -> TireAnalysisResult:
 
 
 # ── Funciones auxiliares ─────────────────────────────────────────────────────
+
+def _zone_depths(roi: np.ndarray, base_depth: float) -> tuple[float, float, float]:
+    """
+    Estima la profundidad en 3 zonas (interior, centro, exterior) según la
+    textura de cada tercio horizontal de la banda. Más textura = más surco.
+    """
+    try:
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape[:2]
+        thirds = [gray[:, :w // 3], gray[:, w // 3:2 * w // 3], gray[:, 2 * w // 3:]]
+        texs = []
+        for z in thirds:
+            lap = cv2.Laplacian(z, cv2.CV_64F).var()
+            texs.append(float(lap))
+        avg = sum(texs) / 3 if sum(texs) > 0 else 1.0
+        out = []
+        for t in texs:
+            factor = t / avg if avg > 0 else 1.0
+            # limitar variación a ±35% del valor base
+            factor = max(0.65, min(1.35, factor))
+            out.append(round(max(0.5, min(9.0, base_depth * factor)), 1))
+        return out[0], out[1], out[2]
+    except Exception:
+        return base_depth, base_depth, base_depth
+
 
 def _detect_tire_presence(img: np.ndarray) -> tuple[bool, float]:
     """Detecta si la imagen contiene una llanta usando análisis de círculos y oscuridad."""
