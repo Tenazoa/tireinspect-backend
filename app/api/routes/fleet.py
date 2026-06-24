@@ -484,15 +484,23 @@ def fleet_stock(
         q = search.upper()
         items = [r for r in items if (r.code or "").upper().find(q) >= 0
                  or f"{r.brand or ''} {r.model or ''}".upper().find(q) >= 0]
+    by_brand = Counter((r.brand or "—").strip() or "—" for r in items)
+    by_size = Counter((r.size or "—").strip() or "—" for r in items)
+    by_life = Counter((r.life or "—").strip() or "—" for r in items)
     out = [{
         "code": r.code, "brand": r.brand, "model": r.model, "size": r.size,
         "life": r.life, "depthMm": r.depth_mm, "kmTotal": r.km_total,
         "ubicacion": r.ubicacion, "plate": r.plate, "condicion": r.condicion,
     } for r in items[:3000]]
+    top = lambda cnt: [{"label": k, "count": v} for k, v in cnt.most_common(20)]
     return {
         "total": len(rows),
+        "filteredCount": len(items),
         "byUbicacion": sorted([{"ubicacion": k, "count": v} for k, v in by_ubic.items()],
                               key=lambda x: x["count"], reverse=True),
+        "byBrand": top(by_brand),
+        "bySize": top(by_size),
+        "byLife": top(by_life),
         "items": out,
         "shown": len(out),
     }
