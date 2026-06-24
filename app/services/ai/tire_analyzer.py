@@ -26,9 +26,6 @@ class TireAnalysisResult:
     confidence: float        # 0.0 - 1.0
     condition_score: int     # 0-100 (100 = llanta nueva)
     estimated_depth_mm: float  # estimación de profundidad en mm (centro)
-    depth_inner_mm: float = 0.0   # lado interior
-    depth_center_mm: float = 0.0  # centro
-    depth_outer_mm: float = 0.0   # lado exterior
 
     # Patrón de desgaste
     wear_pattern: str        # uniform | center | edge_both | edge_inner | edge_outer | cupping | diagonal
@@ -40,6 +37,11 @@ class TireAnalysisResult:
     # Metadatos
     is_tire_detected: bool   # ¿La imagen contiene una llanta?
     analysis_notes: str
+
+    # Profundidad por zona (con defecto → al final para no romper el dataclass)
+    depth_inner_mm: float = 0.0
+    depth_center_mm: float = 0.0
+    depth_outer_mm: float = 0.0
 
 
 WEAR_LEVELS = {
