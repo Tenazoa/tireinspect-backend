@@ -129,6 +129,27 @@ class PhotoBlob(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
+class TireStock(Base):
+    """
+    Llantas que NO están montadas en unidades (ubicación distinta de '05. UNIDAD'):
+    almacén, reencauche, ciclo final, vendidas, etc. (datos de SOLOMON).
+    """
+    __tablename__ = "tire_stock"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    code: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    brand: Mapped[str | None] = mapped_column(String, nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    size: Mapped[str | None] = mapped_column(String, nullable=True)
+    life: Mapped[str | None] = mapped_column(String, nullable=True)
+    depth_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    km_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ubicacion: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    plate: Mapped[str | None] = mapped_column(String, nullable=True)
+    condicion: Mapped[str | None] = mapped_column(String, nullable=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
 class TireSpec(Base):
     """
     Catálogo de llantas por placa+posición (datos de SOLOMON).

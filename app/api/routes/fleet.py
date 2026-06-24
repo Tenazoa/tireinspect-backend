@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock
 from ...api.deps import get_current_inspector
 
 router = APIRouter(prefix="/fleet", tags=["fleet"])
@@ -130,54 +130,80 @@ async def upload_solomon(
         return str(x).strip() if pd.notna(x) else ""
 
     company_id = inspector.company_id
-    n = len(bd) if cam is None else min(len(bd), len(cam))
 
+    # Si CAMBIAR está alineado por fila (mismo nº filas) usamos sus columnas corregidas;
+    # si no (archivo histórico grande), usamos BD + corrección global de medida.
+    aligned = cam is not None and len(cam) == len(bd)
+    medida_map: dict[str, str] = {}
+    if cam is not None and not aligned:
+        amb = set()
+        for _, r in cam.iterrows():
+            md, mdc = c(r.get("Medida")), c(r.get("Medida Cambiar"))
+            if md and mdc and md != mdc:
+                if md in medida_map and medida_map[md] != mdc:
+                    amb.add(md)
+                else:
+                    medida_map[md] = mdc
+        for k in amb:
+            medida_map.pop(k, None)
+
+    UNIDAD = "05. UNIDAD"
     fleet: dict[str, dict] = {}
     new_by_code: dict[str, dict] = {}
+    stock: list[dict] = []
+    ubic_counts: dict[str, int] = {}
 
-    for i in range(n):
+    def num(b, col):
+        try:
+            return float(b.get(col)) if pd.notna(b.get(col)) else None
+        except Exception:
+            return None
+
+    for i in range(len(bd)):
         b = bd.iloc[i]
-        m = cam.iloc[i] if cam is not None else None
-        plate = c(b.get("Placa")).upper().replace(" ", "").replace("-", "")
-        pos = c(b.get("Posicion"))
-        if not plate or not pos:
-            continue
-        if m is not None:
+        m = cam.iloc[i] if aligned else None
+        ubic = c(b.get("Ubicacion")) or c(b.get("Ubicación 2")) or "Sin ubicación"
+        codigo = c(b.get("Codigo"))
+        if aligned and m is not None:
             marca = c(m.get("Marca Cambiar")) or c(b.get("Marca"))
             modelo = c(m.get("Modelo Cambiar")) or c(b.get("Modelo"))
             medida = c(m.get("Medida Cambiar")) or c(b.get("Medida"))
         else:
-            marca, modelo, medida = c(b.get("Marca")), c(b.get("Modelo")), c(b.get("Medida"))
-        try:
-            cocada = float(b.get("Altura Cocada")) if pd.notna(b.get("Altura Cocada")) else None
-        except Exception:
-            cocada = None
+            marca, modelo = c(b.get("Marca")), c(b.get("Modelo"))
+            medida_raw = c(b.get("Medida"))
+            medida = medida_map.get(medida_raw, medida_raw)
+        cocada = num(b, "Altura Cocada")
         vida = c(b.get("Vida"))
-        codigo = c(b.get("Codigo"))
-        tipo = c(b.get("Ubicación")) or c(b.get("T.Unidad"))
-
-        def num(col):
-            try:
-                return float(b.get(col)) if pd.notna(b.get(col)) else None
-            except Exception:
-                return None
-        km_total = num("KMTotal")
-        # km de la vida actual: 1V->KM1, 1R->KM2, 2R->KM3, 3R->KM4
+        km_total = num(b, "KMTotal")
         vu = vida.upper()
         km_col = {"1V": "KM1", "1R": "KM2", "2R": "KM3", "3R": "KM4"}.get(vu)
-        km_life = num(km_col) if km_col else None
+        km_life = num(b, km_col) if km_col else None
+        plate = c(b.get("Placa")).upper().replace(" ", "").replace("-", "")
+        pos = c(b.get("Posicion"))
 
-        rec = {
-            "plate": plate, "position": pos, "brand": marca, "model": modelo,
-            "size": medida, "lastDepthMm": cocada, "code": codigo, "life": vida,
-            "kmTotal": km_total, "kmLife": km_life,
-        }
-        fleet.setdefault(plate, {"type": tipo, "tires": {}})["tires"][pos] = rec
-        if codigo:
-            new_by_code[codigo] = rec
+        ubic_counts[ubic] = ubic_counts.get(ubic, 0) + 1
 
-    if not fleet:
-        raise HTTPException(400, "El archivo no contiene filas válidas (Placa/Posición).")
+        # Solo las montadas en unidad (05. UNIDAD) con placa+posición van a la flota
+        if ubic == UNIDAD and plate and pos:
+            rec = {
+                "plate": plate, "position": pos, "brand": marca, "model": modelo,
+                "size": medida, "lastDepthMm": cocada, "code": codigo, "life": vida,
+                "kmTotal": km_total, "kmLife": km_life,
+            }
+            fleet.setdefault(plate, {"type": c(b.get("Ubicación")), "tires": {}})["tires"][pos] = rec
+            if codigo:
+                new_by_code[codigo] = rec
+        else:
+            # Inventario en otras ubicaciones (almacén, reencauche, vendidas, etc.)
+            stock.append({
+                "code": codigo or None, "brand": marca or None, "model": modelo or None,
+                "size": medida or None, "life": vida or None, "depth_mm": cocada,
+                "km_total": km_total, "ubicacion": ubic, "plate": plate or None,
+                "condicion": c(b.get("Condicion")) or None,
+            })
+
+    if not fleet and not stock:
+        raise HTTPException(400, "El archivo no contiene filas válidas.")
 
     # ── Diff contra el estado anterior (por código de fuego) ──
     existing = db.query(TireSpec).filter(TireSpec.company_id == company_id).all()
@@ -230,7 +256,16 @@ async def upload_solomon(
             ))
             specs_created += 1
 
+    # ── Inventario (otras ubicaciones): reemplazar todo ──
+    db.query(TireStock).filter(TireStock.company_id == company_id).delete()
+    for srec in stock:
+        db.add(TireStock(id=str(uuid.uuid4()), company_id=company_id, **srec))
     db.commit()
+
+    ubic_list = sorted(
+        [{"ubicacion": k, "count": v} for k, v in ubic_counts.items()],
+        key=lambda x: x["count"], reverse=True,
+    )
 
     return {
         "ok": True,
@@ -238,6 +273,8 @@ async def upload_solomon(
         "vehicles": len(fleet),
         "vehiclesCreated": vehicles_created,
         "tireSpecs": specs_created,
+        "stockCount": len(stock),
+        "byUbicacion": ubic_list,
         "missingCount": len(missing),
         "addedCount": len(added),
         "missing": missing[:1000],
@@ -426,6 +463,38 @@ def fleet_performance(
         "bestVehicles": plates[:10],
         "attentionVehicles": plates[::-1][:10],
         "mostDurableBrands": durable[:6],
+    }
+
+
+@router.get("/stock")
+def fleet_stock(
+    ubicacion: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Inventario de llantas en ubicaciones distintas de la unidad (almacén, reencauche, etc.)."""
+    from collections import Counter
+    rows = db.query(TireStock).filter(TireStock.company_id == inspector.company_id).all()
+    by_ubic = Counter(r.ubicacion or "Sin ubicación" for r in rows)
+    items = rows
+    if ubicacion and ubicacion != "all":
+        items = [r for r in items if (r.ubicacion or "") == ubicacion]
+    if search:
+        q = search.upper()
+        items = [r for r in items if (r.code or "").upper().find(q) >= 0
+                 or f"{r.brand or ''} {r.model or ''}".upper().find(q) >= 0]
+    out = [{
+        "code": r.code, "brand": r.brand, "model": r.model, "size": r.size,
+        "life": r.life, "depthMm": r.depth_mm, "kmTotal": r.km_total,
+        "ubicacion": r.ubicacion, "plate": r.plate, "condicion": r.condicion,
+    } for r in items[:3000]]
+    return {
+        "total": len(rows),
+        "byUbicacion": sorted([{"ubicacion": k, "count": v} for k, v in by_ubic.items()],
+                              key=lambda x: x["count"], reverse=True),
+        "items": out,
+        "shown": len(out),
     }
 
 
