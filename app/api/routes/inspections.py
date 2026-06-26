@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -281,10 +281,26 @@ def inspection_detail(
 @router.get("/{inspection_id}/pdf")
 def inspection_pdf(
     inspection_id: str,
+    request: Request,
+    token: Optional[str] = None,
     db: Session = Depends(get_db),
-    inspector: Inspector = Depends(get_current_inspector),
 ):
-    """Genera y descarga el reporte PDF de una inspección."""
+    """Genera y descarga el reporte PDF. Acepta token por query (?token=) o por header Authorization."""
+    from ...core.security import decode_token
+    if not token:
+        auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth[7:]
+    if not token:
+        raise HTTPException(401, "Token requerido")
+    try:
+        inspector_id = decode_token(token)
+    except Exception:
+        raise HTTPException(401, "Token inválido")
+    inspector = db.get(Inspector, inspector_id)
+    if not inspector:
+        raise HTTPException(401, "No autorizado")
+
     insp = db.get(Inspection, inspection_id)
     if not insp:
         raise HTTPException(404, "Inspección no encontrada")
@@ -295,11 +311,11 @@ def inspection_pdf(
 
     company_name = inspector.company.name if inspector.company else "TireInspect"
 
-    # lookup de código de fuego + vida por posición (SOLOMON)
+    # lookup de código de fuego + vida + km por posición (SOLOMON)
     key = (vehicle.plate or "").upper().replace("-", "").replace(" ", "")
     specs = db.query(TireSpec).filter(TireSpec.plate.isnot(None)).all()
     spec_lookup = {
-        s.position: {"code": s.code, "life": s.life}
+        s.position: {"code": s.code, "life": s.life, "km": s.km_total}
         for s in specs
         if (s.plate or "").upper().replace("-", "").replace(" ", "") == key
     }

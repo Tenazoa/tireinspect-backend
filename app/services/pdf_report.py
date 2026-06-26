@@ -147,16 +147,18 @@ def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str, s
 
     # ── Detalle por llanta ──
     elements.append(Paragraph("Detalle por posición", h2))
-    header = ["Posición", "Prof.", "Marca / Modelo", "Medida", "Cód. fuego", "Vida", "Estado"]
+    header = ["Posición", "Cocada", "Marca / Modelo", "Medida", "Cód.", "Vida", "Km", "Estado"]
     rows = [header]
     for t in tires:
-        depth = (
-            f"{t.tread_depth_center:.1f} mm" if t.tread_depth_center is not None else "—"
-        )
+        zonas = [v for v in (t.tread_depth_inner, t.tread_depth_center, t.tread_depth_outer) if v is not None]
+        dmin = min(zonas) if zonas else None
+        depth = f"{dmin:.1f} mm" if dmin is not None else "—"
         marca = " ".join(filter(None, [t.brand, t.model])) or "—"
         sp = spec_lookup.get(t.position, {})
         codigo = sp.get("code") or t.dot_code or "—"
         vida = sp.get("life") or "—"
+        kmv = sp.get("km")
+        kmtxt = f"{int(kmv):,}".replace(",", " ") if kmv else "—"
         rows.append([
             POSITION_LABEL.get(t.position, t.position),
             depth,
@@ -164,10 +166,11 @@ def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str, s
             t.size or "—",
             str(codigo),
             str(vida),
+            kmtxt,
             REC_LABEL.get(t.recommendation, t.recommendation),
         ])
 
-    tire_table = Table(rows, colWidths=[22 * mm, 18 * mm, 44 * mm, 26 * mm, 24 * mm, 14 * mm, 26 * mm])
+    tire_table = Table(rows, colWidths=[20 * mm, 18 * mm, 40 * mm, 24 * mm, 18 * mm, 12 * mm, 18 * mm, 24 * mm])
     style = [
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -181,8 +184,8 @@ def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str, s
     ]
     # Colorear celda de estado según recomendación
     for i, t in enumerate(tires, start=1):
-        style.append(("TEXTCOLOR", (6, i), (6, i), REC_COLOR.get(t.recommendation, colors.black)))
-        style.append(("FONTNAME", (6, i), (6, i), "Helvetica-Bold"))
+        style.append(("TEXTCOLOR", (7, i), (7, i), REC_COLOR.get(t.recommendation, colors.black)))
+        style.append(("FONTNAME", (7, i), (7, i), "Helvetica-Bold"))
     tire_table.setStyle(TableStyle(style))
     elements.append(tire_table)
 
