@@ -7,8 +7,13 @@ from .core.database import Base, engine
 from .core.seed import seed_if_empty
 from .api.routes import auth, vehicles, inspections, photos, ai, fleet
 
-# Crear tablas al iniciar y sembrar datos demo si está vacía (útil en la nube)
-Base.metadata.create_all(bind=engine)
+# Crear tablas al iniciar y sembrar datos demo si está vacía (útil en la nube).
+# Tolerante a fallos: si la BD está pausada/caída, la app igual arranca y responde
+# (así el servicio no queda en crash-loop y se recupera solo al volver la BD).
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as _e:
+    print(f"[startup] No se pudo crear/verificar tablas (BD no disponible): {_e}")
 
 
 def _migrate():
@@ -32,8 +37,14 @@ def _migrate():
                 pass
 
 
-_migrate()
-seed_if_empty()
+try:
+    _migrate()
+except Exception as _e:
+    print(f"[startup] Migración omitida (BD no disponible): {_e}")
+try:
+    seed_if_empty()
+except Exception as _e:
+    print(f"[startup] Seed omitido (BD no disponible): {_e}")
 
 
 def _bootstrap_admin():
@@ -53,7 +64,10 @@ def _bootstrap_admin():
         db.close()
 
 
-_bootstrap_admin()
+try:
+    _bootstrap_admin()
+except Exception as _e:
+    print(f"[startup] Bootstrap admin omitido: {_e}")
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
 app = FastAPI(
