@@ -1,0 +1,26 @@
+name: Keep alive (Supabase + Render)
+
+# Supabase (plan gratuito) pausa el proyecto tras 7 días sin actividad.
+# Este ping diario genera actividad en la BD para que nunca se pause.
+on:
+  schedule:
+    - cron: '0 12 * * *'   # todos los días 12:00 UTC (07:00 Perú)
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend (toca la base de datos)
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "Intento $i..."
+            RESP=$(curl -s -m 120 https://tireinspect-api.onrender.com/health || true)
+            echo "Respuesta: $RESP"
+            if echo "$RESP" | grep -q '"db": *"up"'; then
+              echo "OK: base de datos activa"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "Aviso: no se confirmó la BD activa (puede estar despertando)."

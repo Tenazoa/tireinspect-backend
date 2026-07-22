@@ -83,4 +83,11 @@ app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads"
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Ping de salud: consulta la BD para mantener activo el proyecto (Supabase pausa por inactividad)."""
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ok", "db": "up"}
+    except Exception as e:
+        return {"status": "degraded", "db": "down", "detail": str(e)[:120]}
