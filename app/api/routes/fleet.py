@@ -117,17 +117,81 @@ async def upload_solomon(
     def read(sheet, header):
         return pd.read_excel(io.BytesIO(raw), sheet_name=sheet, header=header, engine=engine)
 
+    def _norm(s: str) -> str:
+        """normaliza nombre de columna: sin tildes, minúsculas, sin espacios/puntos"""
+        import unicodedata
+        s = unicodedata.normalize("NFKD", str(s))
+        s = "".join(ch for ch in s if not unicodedata.combining(ch))
+        return "".join(ch for ch in s.lower() if ch.isalnum())
+
+    def _detect_header(sheet: str, keys=("codigo", "placa")) -> int:
+        """Busca la fila de encabezados (la que contiene las columnas clave)."""
+        try:
+            probe = pd.read_excel(io.BytesIO(raw), sheet_name=sheet, header=None, nrows=15, engine=engine)
+        except Exception:
+            return 2
+        for i in range(len(probe)):
+            vals = [_norm(v) for v in probe.iloc[i].tolist()]
+            hits = sum(1 for k in keys if any(k in v for v in vals))
+            if hits >= len(keys):
+                return i
+        return 2
+
     try:
-        bd = read("BD", 2)
+        bd = read("BD", _detect_header("BD"))
     except Exception as e:
         raise HTTPException(400, f"No se pudo leer la hoja 'BD': {e}")
     try:
-        cam = read("CAMBIAR", 1)
+        cam = read("CAMBIAR", _detect_header("CAMBIAR", keys=("medida",)))
     except Exception:
         cam = None
 
     def c(x):
         return str(x).strip() if pd.notna(x) else ""
+
+    # ── Mapa de columnas reales (tolerante a tildes/variantes) ──
+    colmap = {_norm(col): col for col in bd.columns}
+
+    def C(*cands):
+        """devuelve el nombre real de la primera columna que coincida"""
+        for cand in cands:
+            k = _norm(cand)
+            if k in colmap:
+                return colmap[k]
+        for cand in cands:  # coincidencia parcial
+            k = _norm(cand)
+            for nk, real in colmap.items():
+                if k and k in nk:
+                    return real
+        return None
+
+    COL_COD, COL_PLACA, COL_POS = C("Codigo"), C("Placa"), C("Posicion"),
+    COL_MARCA, COL_MODELO, COL_MEDIDA = C("Marca"), C("Modelo"), C("Medida")
+    COL_VIDA, COL_COCADA, COL_KMTOT = C("Vida"), C("Altura Cocada", "Cocada"), C("KMTotal", "KM Total")
+    COL_COND = C("Condicion")
+
+    # La columna de UBICACIÓN (estados 05. UNIDAD, 03. ALMACEN...) se detecta por CONTENIDO
+    import re as _re
+    COL_UBIC = None
+    best = 0
+    for col in bd.columns:
+        try:
+            sample = bd[col].dropna().astype(str).head(200)
+        except Exception:
+            continue
+        hits = sum(1 for v in sample if _re.match(r"^\s*\d{2}\s*\.", v))
+        if hits > best:
+            best, COL_UBIC = hits, col
+    # tipo de unidad (CARRETA/TRACTO) por contenido
+    COL_TIPO = None
+    for col in bd.columns:
+        try:
+            sample = bd[col].dropna().astype(str).head(200).str.upper()
+        except Exception:
+            continue
+        if sum(1 for v in sample if v.strip() in ("CARRETA", "TRACTO")) > 20:
+            COL_TIPO = col
+            break
 
     company_id = inspector.company_id
 
@@ -159,38 +223,41 @@ async def upload_solomon(
         except Exception:
             return None
 
+    def g(b, col):
+        return c(b.get(col)) if col else ""
+
     for i in range(len(bd)):
         b = bd.iloc[i]
         m = cam.iloc[i] if aligned else None
-        ubic = c(b.get("Ubicacion")) or c(b.get("Ubicación 2")) or "Sin ubicación"
-        codigo = c(b.get("Codigo"))
+        ubic = g(b, COL_UBIC) or "Sin ubicación"
+        codigo = g(b, COL_COD)
         if aligned and m is not None:
-            marca = c(m.get("Marca Cambiar")) or c(b.get("Marca"))
-            modelo = c(m.get("Modelo Cambiar")) or c(b.get("Modelo"))
-            medida = c(m.get("Medida Cambiar")) or c(b.get("Medida"))
+            marca = c(m.get("Marca Cambiar")) or g(b, COL_MARCA)
+            modelo = c(m.get("Modelo Cambiar")) or g(b, COL_MODELO)
+            medida = c(m.get("Medida Cambiar")) or g(b, COL_MEDIDA)
         else:
-            marca, modelo = c(b.get("Marca")), c(b.get("Modelo"))
-            medida_raw = c(b.get("Medida"))
+            marca, modelo = g(b, COL_MARCA), g(b, COL_MODELO)
+            medida_raw = g(b, COL_MEDIDA)
             medida = medida_map.get(medida_raw, medida_raw)
-        cocada = num(b, "Altura Cocada")
-        vida = c(b.get("Vida"))
-        km_total = num(b, "KMTotal")
+        cocada = num(b, COL_COCADA)
+        vida = g(b, COL_VIDA)
+        km_total = num(b, COL_KMTOT)
         vu = vida.upper()
         km_col = {"1V": "KM1", "1R": "KM2", "2R": "KM3", "3R": "KM4"}.get(vu)
         km_life = num(b, km_col) if km_col else None
-        plate = c(b.get("Placa")).upper().replace(" ", "").replace("-", "")
-        pos = c(b.get("Posicion"))
+        plate = g(b, COL_PLACA).upper().replace(" ", "").replace("-", "")
+        pos = g(b, COL_POS)
 
         ubic_counts[ubic] = ubic_counts.get(ubic, 0) + 1
 
         # Solo las montadas en unidad (05. UNIDAD) con placa+posición van a la flota
-        if ubic == UNIDAD and plate and pos:
+        if ubic.upper().startswith("05") and plate and pos:
             rec = {
                 "plate": plate, "position": pos, "brand": marca, "model": modelo,
                 "size": medida, "lastDepthMm": cocada, "code": codigo, "life": vida,
                 "kmTotal": km_total, "kmLife": km_life,
             }
-            fleet.setdefault(plate, {"type": c(b.get("Ubicación")), "tires": {}})["tires"][pos] = rec
+            fleet.setdefault(plate, {"type": g(b, COL_TIPO), "tires": {}})["tires"][pos] = rec
             if codigo:
                 new_by_code[codigo] = rec
         else:
@@ -199,11 +266,15 @@ async def upload_solomon(
                 "code": codigo or None, "brand": marca or None, "model": modelo or None,
                 "size": medida or None, "life": vida or None, "depth_mm": cocada,
                 "km_total": km_total, "ubicacion": ubic, "plate": plate or None,
-                "condicion": c(b.get("Condicion")) or None,
+                "condicion": g(b, COL_COND) or None,
             })
 
     if not fleet and not stock:
         raise HTTPException(400, "El archivo no contiene filas válidas.")
+    if not COL_UBIC or not COL_COD:
+        raise HTTPException(400,
+            "No se reconocieron las columnas del archivo (Código/Ubicación). "
+            f"Columnas detectadas: {list(bd.columns)[:15]}")
 
     # ── Diff contra el estado anterior (por código de fuego) ──
     existing = db.query(TireSpec).filter(TireSpec.company_id == company_id).all()
