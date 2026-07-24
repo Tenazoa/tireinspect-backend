@@ -169,6 +169,8 @@ async def upload_solomon(
     COL_MARCA, COL_MODELO, COL_MEDIDA = C("Marca"), C("Modelo"), C("Medida")
     COL_VIDA, COL_COCADA, COL_KMTOT = C("Vida"), C("Altura Cocada", "Cocada"), C("KMTotal", "KM Total")
     COL_COND = C("Condicion")
+    # KM por vida: 1V->KM1, 1R->KM2, 2R->KM3, 3R->KM4 (columnas detectadas)
+    COL_KM = {"1V": C("KM1"), "1R": C("KM2"), "2R": C("KM3"), "3R": C("KM4")}
 
     # La columna de UBICACIÓN (estados 05. UNIDAD, 03. ALMACEN...) se detecta por CONTENIDO
     import re as _re
@@ -243,8 +245,11 @@ async def upload_solomon(
         vida = g(b, COL_VIDA)
         km_total = num(b, COL_KMTOT)
         vu = vida.upper()
-        km_col = {"1V": "KM1", "1R": "KM2", "2R": "KM3", "3R": "KM4"}.get(vu)
-        km_life = num(b, km_col) if km_col else None
+        # Recorrido de la vida actual: de la columna KM que corresponde a la vida
+        km_life = num(b, COL_KM.get(vu))
+        # En 1V (primera y única vida) el recorrido es todo su acumulado
+        if vu == "1V" and (km_life is None or km_life == 0):
+            km_life = km_total
         plate = g(b, COL_PLACA).upper().replace(" ", "").replace("-", "")
         pos = g(b, COL_POS)
 
