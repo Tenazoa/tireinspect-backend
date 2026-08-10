@@ -1,26 +1,38 @@
-name: Keep alive (Supabase + Render)
+name: Keep alive (Render + Supabase)
 
-# Supabase (plan gratuito) pausa el proyecto tras 7 días sin actividad.
-# Este ping diario genera actividad en la BD para que nunca se pause.
+# Render (plan gratis) apaga el servicio tras ~15 min sin tráfico.
+# Supabase (plan gratis) pausa el proyecto tras 7 días sin actividad.
+# Este workflow pinguea /health cada 10 min: mantiene Render despierto
+# y, al tocar la BD (SELECT 1), también mantiene activo Supabase.
 on:
   schedule:
-    - cron: '0 12 * * *'   # todos los días 12:00 UTC (07:00 Perú)
+    - cron: '*/10 * * * *'   # cada 10 minutos (GitHub puede retrasarlo unos min)
   workflow_dispatch:
+
+# Evita que se acumulen ejecuciones si una tarda
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping backend (toca la base de datos)
+      - name: Ping backend (despierta Render + toca la BD)
         run: |
-          for i in 1 2 3 4 5; do
+          ok=0
+          # Varios intentos por corrida para cubrir el arranque en frío de Render
+          for i in 1 2 3 4 5 6; do
             echo "Intento $i..."
             RESP=$(curl -s -m 120 https://tireinspect-api.onrender.com/health || true)
             echo "Respuesta: $RESP"
             if echo "$RESP" | grep -q '"db": *"up"'; then
-              echo "OK: base de datos activa"
-              exit 0
+              echo "OK: backend y base de datos activos"
+              ok=1
+              break
             fi
-            sleep 30
+            sleep 20
           done
-          echo "Aviso: no se confirmó la BD activa (puede estar despertando)."
+          if [ "$ok" != "1" ]; then
+            echo "Aviso: no se confirmó activo (Render puede estar despertando)."
+          fi
