@@ -114,6 +114,12 @@ async def upload_solomon(
     name = (file.filename or "").lower()
     engine = "xlrd" if name.endswith(".xls") else "openpyxl"
 
+    # Nombres reales de las hojas (el archivo puede no llamarse "BD"/"CAMBIAR")
+    try:
+        _sheet_names = pd.ExcelFile(io.BytesIO(raw), engine=engine).sheet_names
+    except Exception:
+        _sheet_names = []
+
     def read(sheet, header):
         return pd.read_excel(io.BytesIO(raw), sheet_name=sheet, header=header, engine=engine)
 
@@ -137,12 +143,54 @@ async def upload_solomon(
                 return i
         return 2
 
+    def _norm_sheet(s: str) -> str:
+        return _norm(s)
+
+    def _find_sheet(preferred, keys):
+        """Elige la hoja de datos: 1) por nombre preferido, 2) por contenido (keys en encabezado), 3) la más grande."""
+        # 1) coincidencia por nombre (BD, base, datos…)
+        for want in preferred:
+            for sh in _sheet_names:
+                if _norm_sheet(sh) == _norm_sheet(want):
+                    return sh
+        # 2) por contenido: la hoja cuyo encabezado contenga las claves
+        best, best_rows = None, -1
+        for sh in _sheet_names:
+            try:
+                probe = pd.read_excel(io.BytesIO(raw), sheet_name=sh, header=None, nrows=15, engine=engine)
+            except Exception:
+                continue
+            found = False
+            for i in range(len(probe)):
+                vals = [_norm(v) for v in probe.iloc[i].tolist()]
+                if all(any(k in v for v in vals) for k in keys):
+                    found = True
+                    break
+            if found:
+                try:
+                    nrows = pd.read_excel(io.BytesIO(raw), sheet_name=sh, header=None, engine=engine).shape[0]
+                except Exception:
+                    nrows = 0
+                if nrows > best_rows:
+                    best, best_rows = sh, nrows
+        return best
+
+    data_sheet = _find_sheet(("BD", "base", "datos", "data"), ("codigo", "placa")) \
+        or _find_sheet(("BD",), ("codigo",)) \
+        or (_sheet_names[0] if _sheet_names else "BD")
     try:
-        bd = read("BD", _detect_header("BD"))
+        bd = read(data_sheet, _detect_header(data_sheet))
     except Exception as e:
-        raise HTTPException(400, f"No se pudo leer la hoja 'BD': {e}")
+        raise HTTPException(400, f"No se pudo leer la hoja de datos ('{data_sheet}'). Hojas encontradas: {_sheet_names}. Detalle: {e}")
+
+    # CAMBIAR: solo por nombre (contenido similar a BD podría confundirla)
+    cam_sheet = None
+    for sh in _sheet_names:
+        if sh != data_sheet and _norm_sheet(sh) in ("cambiar", "correccion", "cambios"):
+            cam_sheet = sh
+            break
     try:
-        cam = read("CAMBIAR", _detect_header("CAMBIAR", keys=("medida",)))
+        cam = read(cam_sheet, _detect_header(cam_sheet, keys=("medida",))) if cam_sheet else None
     except Exception:
         cam = None
 
