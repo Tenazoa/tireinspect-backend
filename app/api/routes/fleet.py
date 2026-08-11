@@ -855,7 +855,7 @@ def search_all(
     for s in specs:
         if match_tire(s.code, s.brand, s.model, s.plate):
             thits.append({"code": s.code, "brand": s.brand, "model": s.model, "size": s.size,
-                          "life": s.life, "depthMm": s.depth_mm, "kmTotal": s.km_total,
+                          "life": s.life, "depthMm": s.last_depth_mm, "kmTotal": s.km_total,
                           "plate": s.plate, "position": s.position, "where": "05. UNIDAD (montada)"})
     for r in stock:
         if match_tire(r.code, r.brand, r.model, r.plate):
@@ -879,7 +879,7 @@ def tire_by_code(
         if (s.code or "").strip().upper() == c:
             records.append({"where": "05. UNIDAD (montada)", "plate": s.plate, "position": s.position,
                             "brand": s.brand, "model": s.model, "size": s.size, "life": s.life,
-                            "depthMm": s.depth_mm, "kmTotal": s.km_total, "kmLife": s.km_life})
+                            "depthMm": s.last_depth_mm, "kmTotal": s.km_total, "kmLife": s.km_life})
     for r in db.query(TireStock).filter(TireStock.company_id == cid).all():
         if (r.code or "").strip().upper() == c:
             records.append({"where": r.ubicacion, "plate": r.plate, "position": None,
@@ -921,7 +921,7 @@ def intelligence(
         if is_re:
             a.retreads += 1
             retread_savings += (_price(s.size, brand=s.brand) - _price(s.size, retread=True, brand=s.brand))
-        depth = s.depth_mm
+        depth = s.last_depth_mm
         if depth is not None:
             a.depth_sum += depth
             a.depth_n += 1
@@ -959,10 +959,10 @@ def intelligence(
     ranked = sorted([r for r in rows if r["avgKm"] > 0], key=lambda r: r["avgKm"], reverse=True)
 
     # Proyección de compra: llantas cerca del límite
-    near = [s for s in specs if s.depth_mm is not None]
-    need_now = sum(1 for s in near if s.depth_mm <= LIMIT_TREAD_MM + 1)   # ≤5mm
-    need_soon = sum(1 for s in near if LIMIT_TREAD_MM + 1 < s.depth_mm <= LIMIT_TREAD_MM + 3)  # 5–7mm
-    est_cost_now = sum(_price(s.size, brand=s.brand) for s in near if s.depth_mm <= LIMIT_TREAD_MM + 1)
+    near = [s for s in specs if s.last_depth_mm is not None]
+    need_now = sum(1 for s in near if s.last_depth_mm <= LIMIT_TREAD_MM + 1)   # ≤5mm
+    need_soon = sum(1 for s in near if LIMIT_TREAD_MM + 1 < s.last_depth_mm <= LIMIT_TREAD_MM + 3)  # 5–7mm
+    est_cost_now = sum(_price(s.size, brand=s.brand) for s in near if s.last_depth_mm <= LIMIT_TREAD_MM + 1)
 
     fleet_km_per_mm = total_km / total_worn if total_worn else 0
     return {
