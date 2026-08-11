@@ -1095,10 +1095,10 @@ def intelligence(
 
     class Agg:
         __slots__ = ("count", "retreads", "km", "worn", "depth_sum", "depth_n", "cost_new",
-                     "km_new", "n_new", "km_re", "n_re", "est", "n_est", "met")
+                     "km_new", "n_new", "km_re", "n_re", "est", "n_est", "met", "km_est")
         def __init__(self):
             self.count = self.retreads = self.n_new = self.n_re = self.n_est = self.met = 0
-            self.km = self.worn = self.depth_sum = self.cost_new = self.km_new = self.km_re = self.est = 0.0
+            self.km = self.worn = self.depth_sum = self.cost_new = self.km_new = self.km_re = self.est = self.km_est = 0.0
             self.depth_n = 0
 
     brands: dict[str, Agg] = {}
@@ -1121,7 +1121,7 @@ def intelligence(
         km = float(s.km_life or 0)
         est = float(getattr(s, "estimado_km", 0) or 0)
         if est > 0:
-            a.est += est; a.n_est += 1
+            a.est += est; a.n_est += 1; a.km_est += km
             g_est += est; g_kmest += km; g_nest += 1
             if km >= est:
                 a.met += 1; g_met += 1
@@ -1171,7 +1171,7 @@ def intelligence(
             "reCount": a.n_re, "reAvgKm": round(avg_re), "reRend": _rend(avg_re),
             # vs Estimado TYM (meta por llanta)
             "estCount": a.n_est,
-            "vsEstimadoPct": round(a.km / a.est * 100, 1) if a.est else None,
+            "vsEstimadoPct": round(a.km_est / a.est * 100, 1) if a.est else None,
             "metRate": round(a.met / a.n_est * 100, 1) if a.n_est else None,
         })
 
