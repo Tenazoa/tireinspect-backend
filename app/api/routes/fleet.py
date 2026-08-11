@@ -255,12 +255,19 @@ async def upload_solomon(
         s2 = _re2.sub(r"\s+\d+[A-Z]\b.*$", "", s2)    # quita índice de carga "107S"
         t = s2.replace(" ", "").replace("..", ".")    # sin espacios, 22..5 -> 22.5
         has225 = ("2.5" in t) or ("2.8" in t) or ("2.2" in t) or t.endswith("R22")
-        if not has225 and _re2.search(r"(\.00|X20|-20|R20|R16|R15|R14|235/|245/|185/|LT)", t):
-            # Medidas reales de camioneta / aro 20": se conservan, pero con
-            # formato limpio (sin espacios) y completando las incompletas.
-            if t == "245/75R":
-                return "245/75R16"      # incompleta → aro 16
-            return t                     # ej: "12.00 - 20" → "12.00-20"
+        if not has225 and _re2.search(r"(\.00|X20|-20|R20|0020|R16|R15|R14|235/|245/|185/|LT)", t):
+            # Medidas reales de camioneta / aro 20": se conservan pero limpias.
+            u = t[2:] if t.startswith("LT") else t          # quita prefijo "LT"
+            # aro 20": consolidar a 11.00-20 / 12.00-20 (sin ply -18/-16)
+            if ("20" in u) and _re2.search(r"(\.00|X20|20-|R20|0020|-20)", u):
+                if u.startswith("11"):
+                    return "11.00-20"
+                if u.startswith("12"):
+                    return "12.00-20"
+            u = _re2.sub(r"-\d+$", "", u)                    # quita ply final "-18"
+            if u == "245/75R":
+                return "245/75R16"                           # incompleta → aro 16
+            return u                                          # ej: "245/70R16 107S" → "245/70R16"
         if t.startswith("295") or t.startswith("297"):
             return "295/80R22.5"
         if t.startswith("425") or t.startswith("426"):
