@@ -1107,7 +1107,8 @@ def intelligence(
         a.count += 1
         life = (s.life or "").strip().upper()
         is_re = life.endswith("R")
-        km = float(s.km_life or s.km_total or 0)
+        # Recorrido de la VIDA ACTUAL (no el acumulado) para medir rendimiento por vida
+        km = float(s.km_life or 0)
         if is_re:
             a.retreads += 1
             retread_savings += (_price(s.size, brand=s.brand) - _price(s.size, retread=True, brand=s.brand))
