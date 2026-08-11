@@ -1087,15 +1087,19 @@ def intelligence(
     usable = max(1.0, NEW_TREAD_MM - LIMIT_TREAD_MM)
 
     class Agg:
-        __slots__ = ("count", "retreads", "km", "worn", "depth_sum", "depth_n", "cost_new")
+        __slots__ = ("count", "retreads", "km", "worn", "depth_sum", "depth_n", "cost_new",
+                     "km_new", "n_new", "km_re", "n_re")
         def __init__(self):
-            self.count = self.retreads = 0
-            self.km = self.worn = self.depth_sum = self.cost_new = 0.0
+            self.count = self.retreads = self.n_new = self.n_re = 0
+            self.km = self.worn = self.depth_sum = self.cost_new = self.km_new = self.km_re = 0.0
             self.depth_n = 0
 
     brands: dict[str, Agg] = {}
     total_km = total_worn = 0.0
     retread_savings = 0.0
+    # Acumuladores globales nuevas (1V) vs reencauchadas (xR)
+    g_km_new = g_km_re = 0.0
+    g_n_new = g_n_re = 0
 
     for s in specs:
         brand = (s.brand or "—").strip() or "—"
@@ -1103,30 +1107,37 @@ def intelligence(
         a.count += 1
         life = (s.life or "").strip().upper()
         is_re = life.endswith("R")
+        km = float(s.km_life or s.km_total or 0)
         if is_re:
             a.retreads += 1
             retread_savings += (_price(s.size, brand=s.brand) - _price(s.size, retread=True, brand=s.brand))
+            a.km_re += km; a.n_re += 1
+            g_km_re += km; g_n_re += 1
+        elif life.endswith("V"):
+            a.km_new += km; a.n_new += 1
+            g_km_new += km; g_n_new += 1
         depth = s.last_depth_mm
         if depth is not None:
             a.depth_sum += depth
             a.depth_n += 1
         worn = max(1.0, NEW_TREAD_MM - (depth if depth is not None else NEW_TREAD_MM))
-        km = float(s.km_life or s.km_total or 0)
         a.km += km
         a.worn += worn
         a.cost_new += _price(s.size, brand=s.brand)
         total_km += km
         total_worn += worn
 
+    def _rend(avg):
+        return round(avg / ESTANDAR_KM * 100, 1) if avg else 0
+
     rows = []
     for brand, a in brands.items():
         km_per_mm = a.km / a.worn if a.worn else 0
         avg_price = a.cost_new / a.count if a.count else 0
         avg_km = a.km / a.count if a.count else 0
-        # Metodología TYMSAC: CPK = precio total ÷ km recorridos
         cost_per_km = (a.cost_new / a.km) if a.km else 0
-        # Rendimiento vs estándar esperado (80.000 km)
-        rendimiento = (avg_km / ESTANDAR_KM * 100) if avg_km else 0
+        avg_new = a.km_new / a.n_new if a.n_new else 0
+        avg_re = a.km_re / a.n_re if a.n_re else 0
         rows.append({
             "label": brand,
             "count": a.count,
@@ -1136,8 +1147,11 @@ def intelligence(
             "kmPerMm": round(km_per_mm),
             "avgKm": round(avg_km),
             "avgPrice": round(avg_price),
-            "rendimientoPct": round(rendimiento, 1),
+            "rendimientoPct": _rend(avg_km),
             "costPerKm": round(cost_per_km, 4),
+            # desglose nuevas vs reencauchadas
+            "newCount": a.n_new, "newAvgKm": round(avg_new), "newRend": _rend(avg_new),
+            "reCount": a.n_re, "reAvgKm": round(avg_re), "reRend": _rend(avg_re),
         })
 
     # ordenar por rendimiento (km promedio) descendente, solo marcas con muestra útil
@@ -1150,11 +1164,19 @@ def intelligence(
     est_cost_now = sum(_price(s.size, brand=s.brand) for s in near if s.last_depth_mm <= LIMIT_TREAD_MM + 1)
 
     fleet_km_per_mm = total_km / total_worn if total_worn else 0
+    avg_new_g = g_km_new / g_n_new if g_n_new else 0
+    avg_re_g = g_km_re / g_n_re if g_n_re else 0
     return {
         "prices": TIRE_PRICES,
-        "assumptions": {"newTreadMm": NEW_TREAD_MM, "limitTreadMm": LIMIT_TREAD_MM},
+        "assumptions": {"newTreadMm": NEW_TREAD_MM, "limitTreadMm": LIMIT_TREAD_MM, "estandarKm": ESTANDAR_KM},
         "fleetKmPerMm": round(fleet_km_per_mm),
         "retreadSavings": round(retread_savings),
+        # Rendimiento diferenciado nuevas (1V) vs reencauchadas (xR)
+        "lifePerf": {
+            "new": {"count": g_n_new, "avgKm": round(avg_new_g), "rendimientoPct": _rend(avg_new_g)},
+            "retread": {"count": g_n_re, "avgKm": round(avg_re_g), "rendimientoPct": _rend(avg_re_g)},
+            "retreadVsNewPct": round(avg_re_g / avg_new_g * 100, 1) if avg_new_g else 0,
+        },
         "purchase": {
             "needNow": need_now, "needSoon": need_soon,
             "estCostNow": round(est_cost_now),
