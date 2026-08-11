@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
@@ -481,10 +481,17 @@ def dashboard(
     db: Session = Depends(get_db),
     inspector: Inspector = Depends(get_current_inspector),
 ):
+    # Carga anticipada (evita N+1: sin esto se consultaba vehículo/llantas/
+    # inspector uno por uno → cientos de viajes a la BD y ~25s de espera).
     inspections = (
         db.query(Inspection)
         .join(Vehicle)
         .filter(Vehicle.company_id == inspector.company_id)
+        .options(
+            joinedload(Inspection.vehicle),
+            selectinload(Inspection.tires),
+            joinedload(Inspection.inspector),
+        )
         .all()
     )
 
