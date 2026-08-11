@@ -805,6 +805,70 @@ def rolling_stats(
     return {"totalRolling": total, "groups": [pack(groups[k]) for k in TYPES]}
 
 
+@router.get("/search-all")
+def search_all(
+    q: str = "",
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Búsqueda global: placas (vehículos) y llantas (por código/marca/modelo)."""
+    query = (q or "").strip().upper()
+    if len(query) < 2:
+        return {"vehicles": [], "tires": []}
+    cid = inspector.company_id
+
+    veh = db.query(Vehicle).filter(Vehicle.company_id == cid).all()
+    vhits = [{
+        "plate": v.plate, "type": v.type, "brand": v.brand, "model": v.model,
+        "year": v.year, "active": getattr(v, "active", True),
+        "tires": len(v.tire_positions or []),
+    } for v in veh if query in (v.plate or "").upper()
+        or query in f"{v.brand or ''} {v.model or ''}".upper()][:20]
+
+    def match_tire(code, brand, model, plate):
+        blob = f"{code or ''} {brand or ''} {model or ''} {plate or ''}".upper()
+        return query in blob
+
+    specs = db.query(TireSpec).filter(TireSpec.company_id == cid).all()
+    stock = db.query(TireStock).filter(TireStock.company_id == cid).all()
+    thits = []
+    for s in specs:
+        if match_tire(s.code, s.brand, s.model, s.plate):
+            thits.append({"code": s.code, "brand": s.brand, "model": s.model, "size": s.size,
+                          "life": s.life, "depthMm": s.depth_mm, "kmTotal": s.km_total,
+                          "plate": s.plate, "position": s.position, "where": "05. UNIDAD (montada)"})
+    for r in stock:
+        if match_tire(r.code, r.brand, r.model, r.plate):
+            thits.append({"code": r.code, "brand": r.brand, "model": r.model, "size": r.size,
+                          "life": r.life, "depthMm": r.depth_mm, "kmTotal": r.km_total,
+                          "plate": r.plate, "position": None, "where": r.ubicacion})
+    return {"vehicles": vhits, "tires": thits[:40], "tiresTotal": len(thits)}
+
+
+@router.get("/tire/{code}")
+def tire_by_code(
+    code: str,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Ficha de una llanta por su código de fuego: dónde está, vida, km, cocada."""
+    cid = inspector.company_id
+    c = (code or "").strip().upper()
+    records = []
+    for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
+        if (s.code or "").strip().upper() == c:
+            records.append({"where": "05. UNIDAD (montada)", "plate": s.plate, "position": s.position,
+                            "brand": s.brand, "model": s.model, "size": s.size, "life": s.life,
+                            "depthMm": s.depth_mm, "kmTotal": s.km_total, "kmLife": s.km_life})
+    for r in db.query(TireStock).filter(TireStock.company_id == cid).all():
+        if (r.code or "").strip().upper() == c:
+            records.append({"where": r.ubicacion, "plate": r.plate, "position": None,
+                            "brand": r.brand, "model": r.model, "size": r.size, "life": r.life,
+                            "depthMm": r.depth_mm, "kmTotal": r.km_total, "kmLife": None,
+                            "condicion": r.condicion})
+    return {"code": c, "found": len(records), "records": records}
+
+
 @router.get("/stats/intelligence")
 def intelligence(
     db: Session = Depends(get_db),
