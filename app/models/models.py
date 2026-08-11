@@ -144,6 +144,7 @@ class TireStock(Base):
     life: Mapped[str | None] = mapped_column(String, nullable=True)
     depth_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
     km_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    km_life: Mapped[float | None] = mapped_column(Float, nullable=True)  # km de la vida (Detalle Vida)
     ubicacion: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     plate: Mapped[str | None] = mapped_column(String, nullable=True)
     condicion: Mapped[str | None] = mapped_column(String, nullable=True)

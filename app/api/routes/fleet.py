@@ -471,7 +471,7 @@ async def upload_solomon(
             stock.append({
                 "code": codigo or None, "brand": marca or None, "model": modelo or None,
                 "size": medida or None, "life": vida or None, "depth_mm": cocada,
-                "km_total": km_total, "ubicacion": ubic, "plate": plate or None,
+                "km_total": km_total, "km_life": km_life, "ubicacion": ubic, "plate": plate or None,
                 "condicion": g(b, COL_COND) or None,
             })
 
@@ -1083,6 +1083,10 @@ def intelligence(
     ahorro por reencauche, proyección de compra y comparativo de marcas.
     Usa precios de referencia (TIRE_PRICES) — editables con precios reales."""
     specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
+    # Rendimiento sobre VIDAS COMPLETADAS: llantas del inventario que ya
+    # terminaron una vida (tienen km de vida registrado). Es el km real logrado.
+    completed = [r for r in db.query(TireStock).filter(TireStock.company_id == inspector.company_id).all()
+                 if (r.km_life or 0) > 0]
 
     usable = max(1.0, NEW_TREAD_MM - LIMIT_TREAD_MM)
 
@@ -1101,13 +1105,13 @@ def intelligence(
     g_km_new = g_km_re = 0.0
     g_n_new = g_n_re = 0
 
-    for s in specs:
+    for s in completed:
         brand = (s.brand or "—").strip() or "—"
         a = brands.setdefault(brand, Agg())
         a.count += 1
         life = (s.life or "").strip().upper()
         is_re = life.endswith("R")
-        # Recorrido de la VIDA ACTUAL (no el acumulado) para medir rendimiento por vida
+        # km de la vida completada (rendimiento real logrado)
         km = float(s.km_life or 0)
         if is_re:
             a.retreads += 1
@@ -1117,7 +1121,7 @@ def intelligence(
         elif life.endswith("V"):
             a.km_new += km; a.n_new += 1
             g_km_new += km; g_n_new += 1
-        depth = s.last_depth_mm
+        depth = s.depth_mm
         if depth is not None:
             a.depth_sum += depth
             a.depth_n += 1
