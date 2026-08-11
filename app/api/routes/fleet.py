@@ -17,6 +17,25 @@ from ...api.deps import get_current_inspector
 
 router = APIRouter(prefix="/fleet", tags=["fleet"])
 
+# ── Parámetros de negocio para "Inteligencia de costos" ──────────────────────
+# Precios de referencia en SOLES por medida (NUEVA / REENCAUCHE). EDITABLES:
+# cuando TYMSAC pase los precios reales, se actualizan aquí.
+TIRE_PRICES = {
+    "295/80R22.5": {"new": 1250, "retread": 480},
+    "11R22.5":     {"new": 1150, "retread": 450},
+    "12R22.5":     {"new": 1300, "retread": 500},
+    "425/65R22.5": {"new": 1900, "retread": 700},
+    "275/70R22.5": {"new": 1100, "retread": 430},
+}
+_PRICE_DEFAULT = {"new": 1200, "retread": 470}
+NEW_TREAD_MM = 16.0   # cocada de una llanta nueva (referencia)
+LIMIT_TREAD_MM = 4.0  # cocada mínima útil antes de cambio (referencia)
+
+
+def _price(size, retread=False):
+    p = TIRE_PRICES.get((size or "").strip(), _PRICE_DEFAULT)
+    return p["retread"] if retread else p["new"]
+
 
 class TireSpecIn(BaseModel):
     position: str
@@ -784,6 +803,92 @@ def rolling_stats(
 
     total = sum(g["tires"] for g in groups.values())
     return {"totalRolling": total, "groups": [pack(groups[k]) for k in TYPES]}
+
+
+@router.get("/stats/intelligence")
+def intelligence(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Inteligencia de costos y rendimiento: km/mm por marca, costo por km,
+    ahorro por reencauche, proyección de compra y comparativo de marcas.
+    Usa precios de referencia (TIRE_PRICES) — editables con precios reales."""
+    specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
+
+    usable = max(1.0, NEW_TREAD_MM - LIMIT_TREAD_MM)
+
+    class Agg:
+        __slots__ = ("count", "retreads", "km", "worn", "depth_sum", "depth_n", "cost_new")
+        def __init__(self):
+            self.count = self.retreads = 0
+            self.km = self.worn = self.depth_sum = self.cost_new = 0.0
+            self.depth_n = 0
+
+    brands: dict[str, Agg] = {}
+    total_km = total_worn = 0.0
+    retread_savings = 0.0
+
+    for s in specs:
+        brand = (s.brand or "—").strip() or "—"
+        a = brands.setdefault(brand, Agg())
+        a.count += 1
+        life = (s.life or "").strip().upper()
+        is_re = life.endswith("R")
+        if is_re:
+            a.retreads += 1
+            retread_savings += (_price(s.size) - _price(s.size, retread=True))
+        depth = s.depth_mm
+        if depth is not None:
+            a.depth_sum += depth
+            a.depth_n += 1
+        worn = max(1.0, NEW_TREAD_MM - (depth if depth is not None else NEW_TREAD_MM))
+        km = float(s.km_life or 0)
+        a.km += km
+        a.worn += worn
+        a.cost_new += _price(s.size)
+        total_km += km
+        total_worn += worn
+
+    rows = []
+    for brand, a in brands.items():
+        km_per_mm = a.km / a.worn if a.worn else 0
+        # km esperado de vida completa a ese ritmo de desgaste
+        expected_km = km_per_mm * usable
+        avg_price = a.cost_new / a.count if a.count else 0
+        cost_per_km = (avg_price / expected_km) if expected_km else 0
+        rows.append({
+            "label": brand,
+            "count": a.count,
+            "retreads": a.retreads,
+            "retreadRate": round(a.retreads / a.count * 100, 1) if a.count else 0,
+            "avgDepth": round(a.depth_sum / a.depth_n, 1) if a.depth_n else None,
+            "kmPerMm": round(km_per_mm),
+            "expectedKm": round(expected_km),
+            "costPerKm": round(cost_per_km, 3),
+        })
+
+    # ordenar por rendimiento (km/mm) descendente, solo marcas con muestra útil
+    ranked = sorted([r for r in rows if r["kmPerMm"] > 0], key=lambda r: r["kmPerMm"], reverse=True)
+
+    # Proyección de compra: llantas cerca del límite
+    near = [s for s in specs if s.depth_mm is not None]
+    need_now = sum(1 for s in near if s.depth_mm <= LIMIT_TREAD_MM + 1)   # ≤5mm
+    need_soon = sum(1 for s in near if LIMIT_TREAD_MM + 1 < s.depth_mm <= LIMIT_TREAD_MM + 3)  # 5–7mm
+    est_cost_now = sum(_price(s.size) for s in near if s.depth_mm <= LIMIT_TREAD_MM + 1)
+
+    fleet_km_per_mm = total_km / total_worn if total_worn else 0
+    return {
+        "prices": TIRE_PRICES,
+        "assumptions": {"newTreadMm": NEW_TREAD_MM, "limitTreadMm": LIMIT_TREAD_MM},
+        "fleetKmPerMm": round(fleet_km_per_mm),
+        "retreadSavings": round(retread_savings),
+        "purchase": {
+            "needNow": need_now, "needSoon": need_soon,
+            "estCostNow": round(est_cost_now),
+        },
+        "brands": ranked,
+        "brandsByCost": sorted([r for r in ranked if r["costPerKm"] > 0], key=lambda r: r["costPerKm"])[:12],
+    }
 
 
 @router.get("/stats/fleet")
