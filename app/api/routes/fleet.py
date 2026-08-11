@@ -1079,17 +1079,27 @@ def predictive(
 
 @router.get("/stats/intelligence")
 def intelligence(
+    size: str = "all",
     db: Session = Depends(get_db),
     inspector: Inspector = Depends(get_current_inspector),
 ):
     """Inteligencia de costos y rendimiento: km/mm por marca, costo por km,
     ahorro por reencauche, proyección de compra y comparativo de marcas.
-    Usa precios de referencia (TIRE_PRICES) — editables con precios reales."""
+    Filtrable por medida con ?size=."""
     specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
     # Rendimiento sobre VIDAS COMPLETADAS: llantas del inventario que ya
     # terminaron una vida (tienen km de vida registrado). Es el km real logrado.
     completed = [r for r in db.query(TireStock).filter(TireStock.company_id == inspector.company_id).all()
                  if (r.km_life or 0) > 0]
+    # Medidas disponibles (sobre las vidas completadas) para el selector
+    from collections import Counter as _C
+    size_counts = _C((r.size or "—").strip() or "—" for r in completed)
+    sizes_available = [{"label": k, "count": v} for k, v in size_counts.most_common()]
+    # Filtro por medida
+    _sz = (size or "all").strip()
+    if _sz and _sz != "all":
+        completed = [r for r in completed if (r.size or "").strip() == _sz]
+        specs = [s for s in specs if (s.size or "").strip() == _sz]
 
     usable = max(1.0, NEW_TREAD_MM - LIMIT_TREAD_MM)
 
@@ -1190,6 +1200,7 @@ def intelligence(
     return {
         "prices": TIRE_PRICES,
         "assumptions": {"newTreadMm": NEW_TREAD_MM, "limitTreadMm": LIMIT_TREAD_MM, "estandarKm": ESTANDAR_KM},
+        "size": _sz, "sizesAvailable": sizes_available,
         "fleetKmPerMm": round(fleet_km_per_mm),
         "retreadSavings": round(retread_savings),
         # Rendimiento diferenciado nuevas (1V) vs reencauchadas (xR)
