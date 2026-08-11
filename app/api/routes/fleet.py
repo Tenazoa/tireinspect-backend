@@ -256,7 +256,11 @@ async def upload_solomon(
         t = s2.replace(" ", "").replace("..", ".")    # sin espacios, 22..5 -> 22.5
         has225 = ("2.5" in t) or ("2.8" in t) or ("2.2" in t) or t.endswith("R22")
         if not has225 and _re2.search(r"(\.00|X20|-20|R20|R16|R15|R14|235/|245/|185/|LT)", t):
-            return raw
+            # Medidas reales de camioneta / aro 20": se conservan, pero con
+            # formato limpio (sin espacios) y completando las incompletas.
+            if t == "245/75R":
+                return "245/75R16"      # incompleta → aro 16
+            return t                     # ej: "12.00 - 20" → "12.00-20"
         if t.startswith("295") or t.startswith("297"):
             return "295/80R22.5"
         if t.startswith("425") or t.startswith("426"):
@@ -267,7 +271,7 @@ async def upload_solomon(
             return "12R22.5"
         if t.startswith("11R") and "2.5" in t:
             return "11R22.5"
-        return raw
+        return t
 
     # Recorrido de la VIDA ACTUAL = columna "Detalle Vida Original"
     # (= KMTotal - km de vidas anteriores). Para 1V equivale a KMTotal.
