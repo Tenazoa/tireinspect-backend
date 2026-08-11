@@ -278,6 +278,8 @@ async def upload_solomon(
             return "12R22.5"
         if t.startswith("11R") and "2.5" in t:
             return "11R22.5"
+        if t.startswith("11X"):        # p.ej. "11XZE" (banda Michelin) → 11R22.5
+            return "11R22.5"
         return t
 
     # Recorrido de la VIDA ACTUAL = columna "Detalle Vida Original"
