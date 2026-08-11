@@ -95,7 +95,7 @@ app.include_router(fleet.router, prefix="/api/v1")
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     """Ping de salud: consulta la BD para mantener activo el proyecto (Supabase pausa por inactividad)."""
     from sqlalchemy import text
