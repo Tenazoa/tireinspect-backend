@@ -1098,21 +1098,31 @@ LOC_ORDER = ["Rodando", "Almacén", "Reencauche", "Fin de vida", "Vendidas", "Ot
 
 @router.get("/brand-locations")
 def brand_locations(
+    size: str = "all",
     db: Session = Depends(get_db),
     inspector: Inspector = Depends(get_current_inspector),
 ):
     """Dónde están las llantas de cada marca: rodando (montadas), almacén,
-    reencauche, fin de vida, vendidas. Cruza flota (montadas) + inventario."""
+    reencauche, fin de vida, vendidas. Cruza flota (montadas) + inventario.
+    Filtrable por medida con ?size=."""
     from collections import Counter
     cid = inspector.company_id
     per_brand: dict[str, Counter] = {}
     totals = Counter()
+    _sz = (size or "all").strip()
+
+    def _ok(sz):
+        return _sz == "all" or (sz or "").strip() == _sz
 
     for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
+        if not _ok(s.size):
+            continue
         b = (s.brand or "—").strip() or "—"
         per_brand.setdefault(b, Counter())["Rodando"] += 1
         totals["Rodando"] += 1
     for r in db.query(TireStock).filter(TireStock.company_id == cid).all():
+        if not _ok(r.size):
+            continue
         b = (r.brand or "—").strip() or "—"
         bucket = _loc_bucket(r.ubicacion)
         per_brand.setdefault(b, Counter())[bucket] += 1
