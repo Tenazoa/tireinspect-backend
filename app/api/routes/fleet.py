@@ -18,23 +18,43 @@ from ...api.deps import get_current_inspector
 router = APIRouter(prefix="/fleet", tags=["fleet"])
 
 # ── Parámetros de negocio para "Inteligencia de costos" ──────────────────────
-# Precios de referencia en SOLES por medida (NUEVA / REENCAUCHE). EDITABLES:
-# cuando TYMSAC pase los precios reales, se actualizan aquí.
-TIRE_PRICES = {
-    "295/80R22.5": {"new": 1250, "retread": 480},
-    "11R22.5":     {"new": 1150, "retread": 450},
-    "12R22.5":     {"new": 1300, "retread": 500},
-    "425/65R22.5": {"new": 1900, "retread": 700},
-    "275/70R22.5": {"new": 1100, "retread": 430},
+# Metodología TYMSAC (de sus facturas): CPK = precio ÷ km recorridos.
+# Estándar de rendimiento esperado por llanta = 80.000 km.
+# Precios REALES en SOLES extraídos de las facturas de TYMSAC (mediana por marca).
+ESTANDAR_KM = 80000.0
+NEW_TREAD_MM = 16.0    # cocada de una llanta nueva (referencia)
+LIMIT_TREAD_MM = 4.0   # cocada mínima útil antes de cambio (referencia)
+
+# Precios NUEVAS en US$ por (marca, medida) — cotizaciones reales TYMSAC 2026.
+USD_PEN = 3.75  # tipo de cambio (editable)
+PRICE_USD = {
+    ("APLUS", "295/80R22.5"): 150.85, ("APLUS", "11R22.5"): 131.36,
+    ("CARGOPOWER", "295/80R22.5"): 172.88, ("CARGOPOWER", "11R22.5"): 161.02,
+    ("DURATURN", "295/80R22.5"): 237.29, ("DURATURN", "11R22.5"): 177.96,
+    ("ANSU", "11R22.5"): 168, ("ANSU", "295/80R22.5"): 165,
 }
-_PRICE_DEFAULT = {"new": 1200, "retread": 470}
-NEW_TREAD_MM = 16.0   # cocada de una llanta nueva (referencia)
-LIMIT_TREAD_MM = 4.0  # cocada mínima útil antes de cambio (referencia)
+# Precio NUEVA por medida (US$) si no hay marca específica.
+PRICE_USD_BY_SIZE = {
+    "295/80R22.5": 165, "11R22.5": 150, "12R22.5": 175,
+    "425/65R22.5": 350, "275/70R22.5": 150,
+}
+_NEW_USD_DEFAULT = 160
+# Reencauche en SOLES (cotización RELINO 2026).
+RETREAD_PEN = {"11R22.5": 440, "295/80R22.5": 470, "12R22.5": 480}
+_RETREAD_PEN_DEFAULT = 450
+# Compat con código que use TIRE_PRICES.
+TIRE_PRICES = {s: {"new": round(u * USD_PEN), "retread": RETREAD_PEN.get(s, _RETREAD_PEN_DEFAULT)}
+               for s, u in PRICE_USD_BY_SIZE.items()}
 
 
-def _price(size, retread=False):
-    p = TIRE_PRICES.get((size or "").strip(), _PRICE_DEFAULT)
-    return p["retread"] if retread else p["new"]
+def _price(size, retread=False, brand=None):
+    """Precio de la llanta en SOLES. Nueva: US$ (marca+medida)×TC. Reencauche: soles."""
+    s = (size or "").strip()
+    if retread:
+        return RETREAD_PEN.get(s, _RETREAD_PEN_DEFAULT)
+    b = (brand or "").strip().upper()
+    usd = PRICE_USD.get((b, s)) or PRICE_USD_BY_SIZE.get(s) or _NEW_USD_DEFAULT
+    return round(usd * USD_PEN)
 
 
 class TireSpecIn(BaseModel):
@@ -900,26 +920,28 @@ def intelligence(
         is_re = life.endswith("R")
         if is_re:
             a.retreads += 1
-            retread_savings += (_price(s.size) - _price(s.size, retread=True))
+            retread_savings += (_price(s.size, brand=s.brand) - _price(s.size, retread=True, brand=s.brand))
         depth = s.depth_mm
         if depth is not None:
             a.depth_sum += depth
             a.depth_n += 1
         worn = max(1.0, NEW_TREAD_MM - (depth if depth is not None else NEW_TREAD_MM))
-        km = float(s.km_life or 0)
+        km = float(s.km_life or s.km_total or 0)
         a.km += km
         a.worn += worn
-        a.cost_new += _price(s.size)
+        a.cost_new += _price(s.size, brand=s.brand)
         total_km += km
         total_worn += worn
 
     rows = []
     for brand, a in brands.items():
         km_per_mm = a.km / a.worn if a.worn else 0
-        # km esperado de vida completa a ese ritmo de desgaste
-        expected_km = km_per_mm * usable
         avg_price = a.cost_new / a.count if a.count else 0
-        cost_per_km = (avg_price / expected_km) if expected_km else 0
+        avg_km = a.km / a.count if a.count else 0
+        # Metodología TYMSAC: CPK = precio total ÷ km recorridos
+        cost_per_km = (a.cost_new / a.km) if a.km else 0
+        # Rendimiento vs estándar esperado (80.000 km)
+        rendimiento = (avg_km / ESTANDAR_KM * 100) if avg_km else 0
         rows.append({
             "label": brand,
             "count": a.count,
@@ -927,18 +949,20 @@ def intelligence(
             "retreadRate": round(a.retreads / a.count * 100, 1) if a.count else 0,
             "avgDepth": round(a.depth_sum / a.depth_n, 1) if a.depth_n else None,
             "kmPerMm": round(km_per_mm),
-            "expectedKm": round(expected_km),
-            "costPerKm": round(cost_per_km, 3),
+            "avgKm": round(avg_km),
+            "avgPrice": round(avg_price),
+            "rendimientoPct": round(rendimiento, 1),
+            "costPerKm": round(cost_per_km, 4),
         })
 
-    # ordenar por rendimiento (km/mm) descendente, solo marcas con muestra útil
-    ranked = sorted([r for r in rows if r["kmPerMm"] > 0], key=lambda r: r["kmPerMm"], reverse=True)
+    # ordenar por rendimiento (km promedio) descendente, solo marcas con muestra útil
+    ranked = sorted([r for r in rows if r["avgKm"] > 0], key=lambda r: r["avgKm"], reverse=True)
 
     # Proyección de compra: llantas cerca del límite
     near = [s for s in specs if s.depth_mm is not None]
     need_now = sum(1 for s in near if s.depth_mm <= LIMIT_TREAD_MM + 1)   # ≤5mm
     need_soon = sum(1 for s in near if LIMIT_TREAD_MM + 1 < s.depth_mm <= LIMIT_TREAD_MM + 3)  # 5–7mm
-    est_cost_now = sum(_price(s.size) for s in near if s.depth_mm <= LIMIT_TREAD_MM + 1)
+    est_cost_now = sum(_price(s.size, brand=s.brand) for s in near if s.depth_mm <= LIMIT_TREAD_MM + 1)
 
     fleet_km_per_mm = total_km / total_worn if total_worn else 0
     return {
