@@ -238,6 +238,34 @@ async def upload_solomon(
         return "".join(ch for ch in str(s).upper() if ch.isalnum()).replace("O", "0")
     INVO_OVERRIDE = {_code("CO225151"): ("DURATURN", "Y237")}
 
+    # ── Normalización de MEDIDAS ──
+    # Medidas estándar de la flota: 295/80R22.5, 11R22.5, 12R22.5,
+    # 425/65R22.5, 275/70R22.5. Corrige los múltiples typos del SOLOMON.
+    # Las medidas de aro 20" (camiones viejos) y de camioneta (16/15/14")
+    # se dejan tal cual porque son reales, no errores.
+    import re as _re2
+    def _norm_size(raw):
+        s = str(raw).upper().strip()
+        if not s:
+            return raw
+        s2 = _re2.sub(r"\s+\d+\s*PR\b.*$", "", s)     # quita capas "18PR" y lo que siga
+        s2 = _re2.sub(r"\s+\d+[A-Z]\b.*$", "", s2)    # quita índice de carga "107S"
+        t = s2.replace(" ", "").replace("..", ".")    # sin espacios, 22..5 -> 22.5
+        has225 = ("2.5" in t) or ("2.8" in t) or ("2.2" in t) or t.endswith("R22")
+        if not has225 and _re2.search(r"(\.00|X20|-20|R20|R16|R15|R14|235/|245/|185/|LT)", t):
+            return raw
+        if t.startswith("295") or t.startswith("297"):
+            return "295/80R22.5"
+        if t.startswith("425") or t.startswith("426"):
+            return "425/65R22.5"
+        if t.startswith("275"):
+            return "275/70R22.5"
+        if t.startswith("12R") and "2.5" in t:
+            return "12R22.5"
+        if t.startswith("11R") and "2.5" in t:
+            return "11R22.5"
+        return raw
+
     # Recorrido de la VIDA ACTUAL = columna "Detalle Vida Original"
     # (= KMTotal - km de vidas anteriores). Para 1V equivale a KMTotal.
     COL_KMLIFE = C("Detalle Vida Original", "Detalle Vida", "Detalle Vida Actual")
@@ -324,6 +352,8 @@ async def upload_solomon(
             real = MODEL_BRAND.get(_nm(modelo))
             if real:
                 marca = real
+        # 3) Normalizar la medida a las 5 estándar (corrige typos del SOLOMON)
+        medida = _norm_size(medida)
 
         cocada = num(b, COL_COCADA)
         vida = g(b, COL_VIDA)
