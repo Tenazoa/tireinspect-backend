@@ -1096,6 +1096,44 @@ def _loc_bucket(ubic: str) -> str:
 LOC_ORDER = ["Rodando", "Almacén", "Reencauche", "Fin de vida", "Vendidas", "Otras"]
 
 
+@router.get("/duplicate-codes")
+def duplicate_codes(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Códigos de fuego REPETIDOS (deberían ser únicos). Cruza flota + inventario.
+    Devuelve la lista de códigos duplicados y todos sus registros para revisar."""
+    from collections import defaultdict
+    cid = inspector.company_id
+    by_code: dict[str, list] = defaultdict(list)
+
+    for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
+        c = (s.code or "").strip()
+        if c:
+            by_code[c].append({"where": "05. UNIDAD (montada)", "plate": s.plate, "position": s.position,
+                               "brand": s.brand, "model": s.model, "size": s.size, "life": s.life,
+                               "depthMm": s.last_depth_mm})
+    for r in db.query(TireStock).filter(TireStock.company_id == cid).all():
+        c = (r.code or "").strip()
+        if c:
+            by_code[c].append({"where": r.ubicacion, "plate": r.plate, "position": None,
+                               "brand": r.brand, "model": r.model, "size": r.size, "life": r.life,
+                               "depthMm": r.depth_mm})
+
+    dups = []
+    for c, recs in by_code.items():
+        if len(recs) > 1:
+            dups.append({"code": c, "count": len(recs), "records": recs})
+    dups.sort(key=lambda x: x["count"], reverse=True)
+    all_codes = sorted([d["code"] for d in dups])
+    return {
+        "duplicateCount": len(dups),
+        "totalTiresAffected": sum(d["count"] for d in dups),
+        "codes": all_codes,           # lista simple para resaltar en las tablas
+        "duplicates": dups[:500],     # detalle
+    }
+
+
 @router.get("/brand-locations")
 def brand_locations(
     size: str = "all",
