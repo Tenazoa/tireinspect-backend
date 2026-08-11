@@ -889,6 +889,92 @@ def tire_by_code(
     return {"code": c, "found": len(records), "records": records}
 
 
+AVG_KM_MONTH = 9000.0  # km/mes promedio por unidad (editable) para estimar fechas
+
+
+@router.get("/predictive")
+def predictive(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Alerta predictiva (km/meses restantes al límite) y rotación sugerida,
+    solo unidades activas. Usa el ritmo de desgaste real de cada llanta."""
+    def _p(s):
+        return (s or "").upper().replace("-", "").replace(" ", "")
+
+    def _is_spare(pos):
+        p = (pos or "").upper()
+        return p in ("RPT", "P13") or p.startswith("SP")
+
+    def _limit(vtype, pos):
+        p = (pos or "").upper()
+        if vtype == "truck" and p in ("P01", "P02"):
+            return 5.0
+        return 3.0
+
+    vehicles = {_p(v.plate): v for v in db.query(Vehicle).filter(Vehicle.company_id == inspector.company_id).all()}
+    specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
+
+    pred = []
+    by_unit: dict[str, list] = {}
+    for s in specs:
+        v = vehicles.get(_p(s.plate))
+        if not v or getattr(v, "active", True) is False or _is_spare(s.position):
+            continue
+        depth = s.last_depth_mm
+        km = float(s.km_life or 0)
+        if depth is None:
+            continue
+        by_unit.setdefault(_p(s.plate), []).append((s.position, depth))
+        worn = NEW_TREAD_MM - depth
+        if km <= 0 or worn <= 0.5:
+            continue
+        rate = worn / km  # mm por km
+        lim = _limit(v.type, s.position)
+        rem_mm = depth - lim
+        if rem_mm <= 0:
+            rem_km = 0
+        else:
+            rem_km = rem_mm / rate if rate > 0 else None
+        if rem_km is None:
+            continue
+        months = rem_km / AVG_KM_MONTH
+        pred.append({
+            "plate": s.plate, "position": s.position, "brand": s.brand, "model": s.model,
+            "size": s.size, "code": s.code, "life": s.life, "depth": round(depth, 1),
+            "limit": lim, "remainingKm": round(rem_km), "months": round(months, 1),
+        })
+
+    pred.sort(key=lambda x: x["remainingKm"])
+
+    # Rotación sugerida: unidades con desgaste muy disparejo entre posiciones
+    rotation = []
+    for plate, tires in by_unit.items():
+        depths = [d for _, d in tires if d is not None]
+        if len(depths) < 4:
+            continue
+        spread = max(depths) - min(depths)
+        if spread >= 4.0:  # más de 4mm de diferencia = conviene rotar
+            v = vehicles.get(plate)
+            deep = max(tires, key=lambda t: t[1])
+            shallow = min(tires, key=lambda t: t[1])
+            rotation.append({
+                "plate": v.plate if v else plate,
+                "spread": round(spread, 1),
+                "minDepth": round(min(depths), 1), "maxDepth": round(max(depths), 1),
+                "suggest": f"Mover {deep[0]} ({deep[1]}mm) → zona de {shallow[0]} ({shallow[1]}mm)",
+            })
+    rotation.sort(key=lambda x: x["spread"], reverse=True)
+
+    return {
+        "assumptions": {"kmMonth": AVG_KM_MONTH, "newTreadMm": NEW_TREAD_MM},
+        "critical30d": sum(1 for p in pred if p["months"] <= 1),
+        "critical90d": sum(1 for p in pred if p["months"] <= 3),
+        "predictive": pred[:200],
+        "rotation": rotation[:50],
+    }
+
+
 @router.get("/stats/intelligence")
 def intelligence(
     db: Session = Depends(get_db),
