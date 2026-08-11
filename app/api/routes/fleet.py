@@ -492,6 +492,8 @@ async def upload_solomon(
         key=lambda x: x["count"], reverse=True,
     )
 
+    from .inspections import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
     return {
         "ok": True,
         "fileName": file.filename,
@@ -628,6 +630,8 @@ def set_status(
         else:
             not_found.append(plate)
     db.commit()
+    from .inspections import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
     return {"ok": True, "updated": updated, "notFoundCount": len(not_found), "notFound": not_found[:30]}
 
 

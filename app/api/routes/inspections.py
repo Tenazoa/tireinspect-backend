@@ -476,11 +476,28 @@ def seed_from_specs(
 
 # ── Datos consolidados para el Dashboard (todo real) ─────────────────────────
 
+# Caché en memoria por empresa (TTL corto): el dashboard es de solo lectura y
+# los datos cambian pocas veces, así que evitamos recalcular en cada visita.
+_DASH_CACHE: dict[str, tuple[float, dict]] = {}
+_DASH_TTL = 60.0  # segundos
+
+
+def invalidate_dashboard_cache():
+    """Limpia la caché del dashboard (llamar al cambiar datos: carga SOLOMON, estado)."""
+    _DASH_CACHE.clear()
+
+
 @router.get("/dashboard")
 def dashboard(
     db: Session = Depends(get_db),
     inspector: Inspector = Depends(get_current_inspector),
 ):
+    import time
+    ck = str(inspector.company_id)
+    hit = _DASH_CACHE.get(ck)
+    if hit and (time.monotonic() - hit[0]) < _DASH_TTL:
+        return hit[1]
+
     # Carga anticipada (evita N+1: sin esto se consultaba vehículo/llantas/
     # inspector uno por uno → cientos de viajes a la BD y ~25s de espera).
     inspections = (
@@ -593,7 +610,7 @@ def dashboard(
     inspected = len(latest)
     this_month = sum(1 for i in latest.values() if (i.created_at or now).strftime("%Y-%m") == now.strftime("%Y-%m"))
 
-    return {
+    result = {
         "stats": {
             "inspectionsThisMonth": this_month,
             "totalInspections": inspected,
@@ -607,3 +624,5 @@ def dashboard(
         "alerts": alerts[:12],
         "vehicles": vehicles_out,
     }
+    _DASH_CACHE[ck] = (time.monotonic(), result)
+    return result
