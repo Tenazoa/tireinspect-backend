@@ -907,6 +907,73 @@ def tire_by_code(
 AVG_KM_MONTH = 9000.0  # km/mes promedio por unidad (editable) para estimar fechas
 
 
+@router.get("/weekly-report")
+def weekly_report(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Reporte semanal en HTML (para enviar por correo automáticamente)."""
+    from fastapi.responses import HTMLResponse
+    from datetime import datetime as _dt
+
+    def _p(s):
+        return (s or "").upper().replace("-", "").replace(" ", "")
+
+    def _min_depth(t):
+        vals = [x for x in (t.tread_depth_inner, t.tread_depth_center, t.tread_depth_outer) if x is not None]
+        return min(vals) if vals else None
+
+    vehicles = {v.plate: v for v in db.query(Vehicle).filter(Vehicle.company_id == inspector.company_id).all()}
+    # llantas críticas de la última inspección de unidades activas
+    from .inspections import recommend, tire_min_depth
+    insps = (db.query(Inspection).join(Vehicle)
+             .filter(Vehicle.company_id == inspector.company_id).all())
+    latest = {}
+    for i in insps:
+        if getattr(i.vehicle, "active", True) is False:
+            continue
+        cur = latest.get(i.vehicle_id)
+        if cur is None or (i.created_at or _dt.min) > (cur.created_at or _dt.min):
+            latest[i.vehicle_id] = i
+    crit = []
+    for insp in latest.values():
+        v = insp.vehicle
+        for t in insp.tires:
+            depth = tire_min_depth(t)
+            rec = recommend(depth, v.type, t.position)
+            if rec in ("replace_now", "replace_soon"):
+                crit.append((v.plate, t.position, t.brand or "", depth, rec))
+    crit.sort(key=lambda x: (0 if x[4] == "replace_now" else 1, x[3] if x[3] is not None else 99))
+    urgent = [c for c in crit if c[4] == "replace_now"]
+
+    rows_html = "".join(
+        f"<tr><td style='padding:6px 10px'>{c[0]}</td><td style='padding:6px 10px'>{c[1]}</td>"
+        f"<td style='padding:6px 10px'>{c[2]}</td><td style='padding:6px 10px'>{c[3]} mm</td>"
+        f"<td style='padding:6px 10px;color:{'#e11d48' if c[4]=='replace_now' else '#ea580c'};font-weight:700'>"
+        f"{'URGENTE' if c[4]=='replace_now' else 'Próximo'}</td></tr>"
+        for c in crit[:60])
+    today = _dt.utcnow().strftime("%d/%m/%Y")
+    html = f"""<div style="font-family:Arial,sans-serif;max-width:720px;margin:auto">
+      <div style="background:#0f2050;color:#fff;padding:18px 22px;border-radius:12px 12px 0 0">
+        <h2 style="margin:0">TYMSAC — Reporte semanal de neumáticos</h2>
+        <p style="margin:4px 0 0;color:#9fd3ff">{today}</p>
+      </div>
+      <div style="border:1px solid #e5e7eb;border-top:none;padding:20px;border-radius:0 0 12px 12px">
+        <p style="font-size:16px"><b style="color:#e11d48">{len(urgent)}</b> llantas en <b>cambio urgente</b> ·
+           <b style="color:#ea580c">{len(crit)-len(urgent)}</b> próximas a cambiar.</p>
+        <table style="border-collapse:collapse;width:100%;font-size:13px">
+          <thead><tr style="background:#f3f4f6;text-align:left">
+            <th style="padding:6px 10px">Placa</th><th style="padding:6px 10px">Pos.</th>
+            <th style="padding:6px 10px">Marca</th><th style="padding:6px 10px">Cocada</th>
+            <th style="padding:6px 10px">Estado</th></tr></thead>
+          <tbody>{rows_html or '<tr><td colspan=5 style="padding:12px">Sin llantas críticas 🎉</td></tr>'}</tbody>
+        </table>
+        <p style="color:#6b7280;font-size:12px;margin-top:16px">Reporte automático del sistema de control de neumáticos TYMSAC.</p>
+      </div>
+    </div>"""
+    return HTMLResponse(html)
+
+
 @router.get("/audit")
 def get_audit(
     limit: int = 200,

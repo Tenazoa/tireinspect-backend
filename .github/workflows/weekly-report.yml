@@ -1,0 +1,39 @@
+name: Reporte semanal por correo
+
+# Envía cada lunes el reporte de llantas críticas al correo configurado.
+# REQUIERE configurar estos "secrets" en el repo (Settings → Secrets → Actions):
+#   LOGIN_EMAIL        correo de un usuario del sistema (para obtener token)
+#   LOGIN_PASSWORD     su contraseña
+#   GMAIL_USER         tu Gmail que envía (ej. tenazoapedro77@gmail.com)
+#   GMAIL_APP_PASSWORD contraseña de aplicación de Gmail (16 letras, NO la normal)
+#   MAIL_TO            destinatario(s), separados por coma
+on:
+  schedule:
+    - cron: '0 12 * * 1'   # lunes 12:00 UTC (07:00 Perú)
+  workflow_dispatch:
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generar reporte HTML
+        run: |
+          API=https://tireinspect-api.onrender.com/api/v1
+          TOKEN=$(curl -s -m 120 -X POST "$API/auth/login" -H "Content-Type: application/json" \
+            -d "{\"email\":\"${{ secrets.LOGIN_EMAIL }}\",\"password\":\"${{ secrets.LOGIN_PASSWORD }}\"}" \
+            | grep -oE '"access_token":"[^"]+"' | cut -d'"' -f4)
+          curl -s -m 120 -H "Authorization: Bearer $TOKEN" "$API/fleet/weekly-report" -o body.html
+          echo "Bytes del reporte: $(wc -c < body.html)"
+
+      - name: Enviar correo
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USER }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          from: TYMSAC Neumáticos <${{ secrets.GMAIL_USER }}>
+          to: ${{ secrets.MAIL_TO }}
+          subject: "TYMSAC — Reporte semanal de neumáticos"
+          html_body: file://body.html
