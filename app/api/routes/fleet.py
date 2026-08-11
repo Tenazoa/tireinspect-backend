@@ -12,7 +12,18 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog
+
+
+def _audit(db, inspector, action, target, detail):
+    """Registra un cambio en la auditoría (best-effort, no rompe si falla)."""
+    try:
+        db.add(AuditLog(actor=getattr(inspector, "email", None) or getattr(inspector, "name", None),
+                        action=action, target=str(target)[:120], detail=str(detail)[:500],
+                        company_id=inspector.company_id))
+        db.commit()
+    except Exception:
+        db.rollback()
 from ...api.deps import get_current_inspector
 
 router = APIRouter(prefix="/fleet", tags=["fleet"])
@@ -535,6 +546,8 @@ async def upload_solomon(
 
     from .inspections import invalidate_dashboard_cache
     invalidate_dashboard_cache()
+    _audit(db, inspector, "cargar-solomon", file.filename or "archivo",
+           f"{specs_created} llantas en flota · {len(stock)} en inventario")
     return {
         "ok": True,
         "fileName": file.filename,
@@ -673,6 +686,8 @@ def set_status(
     db.commit()
     from .inspections import invalidate_dashboard_cache
     invalidate_dashboard_cache()
+    _audit(db, inspector, "cambiar-estado", f"{updated} unidades",
+           f"{sum(1 for i in body.items if i.active)} activas / {sum(1 for i in body.items if not i.active)} inactivas")
     return {"ok": True, "updated": updated, "notFoundCount": len(not_found), "notFound": not_found[:30]}
 
 
@@ -890,6 +905,23 @@ def tire_by_code(
 
 
 AVG_KM_MONTH = 9000.0  # km/mes promedio por unidad (editable) para estimar fechas
+
+
+@router.get("/audit")
+def get_audit(
+    limit: int = 200,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Registro de auditoría (cambios de estado, marcas, cargas)."""
+    rows = (db.query(AuditLog)
+            .filter(AuditLog.company_id == inspector.company_id)
+            .order_by(AuditLog.created_at.desc())
+            .limit(min(limit, 500)).all())
+    return [{
+        "at": r.created_at.isoformat() if r.created_at else None,
+        "actor": r.actor, "action": r.action, "target": r.target, "detail": r.detail,
+    } for r in rows]
 
 
 @router.get("/predictive")
@@ -1233,6 +1265,8 @@ def update_makes(
         else:
             not_found.append(plate)
     db.commit()
+    _audit(db, inspector, "editar-vehiculo", f"{updated} unidades",
+           "; ".join(f"{m.plate}: {m.brand or ''} {m.model or ''} {m.year or ''}".strip() for m in body.makes[:10]))
     return {"ok": True, "updated": updated, "notFound": not_found[:20], "notFoundCount": len(not_found)}
 
 

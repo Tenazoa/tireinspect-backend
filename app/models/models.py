@@ -150,6 +150,19 @@ class TireStock(Base):
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
 
 
+class AuditLog(Base):
+    """Registro de auditoría: quién cambió qué y cuándo."""
+    __tablename__ = "audit_log"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    actor: Mapped[str | None] = mapped_column(String, nullable=True)      # email/nombre
+    action: Mapped[str | None] = mapped_column(String, nullable=True)     # p.ej. set-status
+    target: Mapped[str | None] = mapped_column(String, nullable=True)     # placa / código
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)       # descripción del cambio
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
 class TireSpec(Base):
     """
     Catálogo de llantas por placa+posición (datos de SOLOMON).
