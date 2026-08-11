@@ -1077,6 +1077,63 @@ def predictive(
     }
 
 
+def _loc_bucket(ubic: str) -> str:
+    """Agrupa las ubicaciones SOLOMON en categorías legibles."""
+    u = (ubic or "").upper()
+    if u.startswith("05"):
+        return "Rodando"
+    if "REENCAUCHE" in u or u.startswith("09") or u.startswith("10") or u.startswith("11"):
+        return "Reencauche"
+    if "ALMACEN" in u or u.startswith("03") or u.startswith("04") or u.startswith("12") or u.startswith("02"):
+        return "Almacén"
+    if "CICLO FINAL" in u or u.startswith("14") or u.startswith("15") or u.startswith("13"):
+        return "Fin de vida"
+    if "VENDIDA" in u or "VENTA" in u or u.startswith("07") or u.startswith("18"):
+        return "Vendidas"
+    return "Otras"
+
+
+LOC_ORDER = ["Rodando", "Almacén", "Reencauche", "Fin de vida", "Vendidas", "Otras"]
+
+
+@router.get("/brand-locations")
+def brand_locations(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Dónde están las llantas de cada marca: rodando (montadas), almacén,
+    reencauche, fin de vida, vendidas. Cruza flota (montadas) + inventario."""
+    from collections import Counter
+    cid = inspector.company_id
+    per_brand: dict[str, Counter] = {}
+    totals = Counter()
+
+    for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
+        b = (s.brand or "—").strip() or "—"
+        per_brand.setdefault(b, Counter())["Rodando"] += 1
+        totals["Rodando"] += 1
+    for r in db.query(TireStock).filter(TireStock.company_id == cid).all():
+        b = (r.brand or "—").strip() or "—"
+        bucket = _loc_bucket(r.ubicacion)
+        per_brand.setdefault(b, Counter())[bucket] += 1
+        totals[bucket] += 1
+
+    rows = []
+    for b, c in per_brand.items():
+        total = sum(c.values())
+        rows.append({
+            "brand": b, "total": total,
+            **{k: c.get(k, 0) for k in LOC_ORDER},
+        })
+    rows.sort(key=lambda r: r["total"], reverse=True)
+    return {
+        "order": LOC_ORDER,
+        "totals": {k: totals.get(k, 0) for k in LOC_ORDER},
+        "grandTotal": sum(totals.values()),
+        "brands": rows,
+    }
+
+
 @router.get("/stats/intelligence")
 def intelligence(
     size: str = "all",
