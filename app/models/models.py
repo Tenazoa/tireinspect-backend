@@ -145,6 +145,7 @@ class TireStock(Base):
     depth_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
     km_total: Mapped[float | None] = mapped_column(Float, nullable=True)
     km_life: Mapped[float | None] = mapped_column(Float, nullable=True)  # km de la vida (Detalle Vida)
+    estimado_km: Mapped[float | None] = mapped_column(Float, nullable=True)  # meta "Estimado TYM"
     ubicacion: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     plate: Mapped[str | None] = mapped_column(String, nullable=True)
     condicion: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -183,5 +184,6 @@ class TireSpec(Base):
     life: Mapped[str | None] = mapped_column(String, nullable=True)
     km_total: Mapped[float | None] = mapped_column(Float, nullable=True)
     km_life: Mapped[float | None] = mapped_column(Float, nullable=True)
+    estimado_km: Mapped[float | None] = mapped_column(Float, nullable=True)  # meta "Estimado TYM"
     vehicle_type: Mapped[str | None] = mapped_column(String, nullable=True)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)

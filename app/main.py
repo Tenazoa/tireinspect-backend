@@ -26,11 +26,15 @@ def _migrate():
         stmts.append("ALTER TABLE tire_specs ADD COLUMN IF NOT EXISTS km_total DOUBLE PRECISION")
         stmts.append("ALTER TABLE tire_specs ADD COLUMN IF NOT EXISTS km_life DOUBLE PRECISION")
         stmts.append("ALTER TABLE tire_stock ADD COLUMN IF NOT EXISTS km_life DOUBLE PRECISION")
+        stmts.append("ALTER TABLE tire_specs ADD COLUMN IF NOT EXISTS estimado_km DOUBLE PRECISION")
+        stmts.append("ALTER TABLE tire_stock ADD COLUMN IF NOT EXISTS estimado_km DOUBLE PRECISION")
     else:  # sqlite u otros: intentar y tolerar si ya existe
         stmts.append("ALTER TABLE vehicles ADD COLUMN active BOOLEAN DEFAULT 1")
         stmts.append("ALTER TABLE tire_specs ADD COLUMN km_total FLOAT")
         stmts.append("ALTER TABLE tire_specs ADD COLUMN km_life FLOAT")
         stmts.append("ALTER TABLE tire_stock ADD COLUMN km_life FLOAT")
+        stmts.append("ALTER TABLE tire_specs ADD COLUMN estimado_km FLOAT")
+        stmts.append("ALTER TABLE tire_stock ADD COLUMN estimado_km FLOAT")
     with engine.begin() as conn:
         for s in stmts:
             try:

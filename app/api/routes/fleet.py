@@ -335,6 +335,7 @@ async def upload_solomon(
     # Recorrido de la VIDA ACTUAL = columna "Detalle Vida Original"
     # (= KMTotal - km de vidas anteriores). Para 1V equivale a KMTotal.
     COL_KMLIFE = C("Detalle Vida Original", "Detalle Vida", "Detalle Vida Actual")
+    COL_ESTIMADO = C("Estimado TYM", "Estimado TYMSAC", "Estimado")
 
     # La columna de UBICACIÓN (estados 05. UNIDAD, 03. ALMACEN...) se detecta por CONTENIDO
     import re as _re
@@ -448,6 +449,7 @@ async def upload_solomon(
         vu = vida.upper()
         # Recorrido de la vida actual (columna "Detalle Vida Original")
         km_life = num(b, COL_KMLIFE)
+        estimado = num(b, COL_ESTIMADO)  # meta de km de esta llanta (Estimado TYM)
         # Respaldo: si no vino, en 1V el recorrido es todo el acumulado
         if (km_life is None or km_life == 0) and vu == "1V":
             km_life = km_total
@@ -461,7 +463,7 @@ async def upload_solomon(
             rec = {
                 "plate": plate, "position": pos, "brand": marca, "model": modelo,
                 "size": medida, "lastDepthMm": cocada, "code": codigo, "life": vida,
-                "kmTotal": km_total, "kmLife": km_life,
+                "kmTotal": km_total, "kmLife": km_life, "estimado": estimado,
             }
             fleet.setdefault(plate, {"type": g(b, COL_TIPO), "tires": {}})["tires"][pos] = rec
             if codigo:
@@ -471,7 +473,8 @@ async def upload_solomon(
             stock.append({
                 "code": codigo or None, "brand": marca or None, "model": modelo or None,
                 "size": medida or None, "life": vida or None, "depth_mm": cocada,
-                "km_total": km_total, "km_life": km_life, "ubicacion": ubic, "plate": plate or None,
+                "km_total": km_total, "km_life": km_life, "estimado_km": estimado,
+                "ubicacion": ubic, "plate": plate or None,
                 "condicion": g(b, COL_COND) or None,
             })
 
@@ -528,7 +531,7 @@ async def upload_solomon(
                 id=str(uuid.uuid4()), plate=plate, position=pos,
                 brand=t["brand"], model=t["model"], size=t["size"],
                 last_depth_mm=t["lastDepthMm"], code=t["code"], life=t["life"],
-                km_total=t.get("kmTotal"), km_life=t.get("kmLife"),
+                km_total=t.get("kmTotal"), km_life=t.get("kmLife"), estimado_km=t.get("estimado"),
                 vehicle_type=vtype, company_id=company_id,
             ))
             specs_created += 1
@@ -1092,10 +1095,10 @@ def intelligence(
 
     class Agg:
         __slots__ = ("count", "retreads", "km", "worn", "depth_sum", "depth_n", "cost_new",
-                     "km_new", "n_new", "km_re", "n_re")
+                     "km_new", "n_new", "km_re", "n_re", "est", "n_est", "met")
         def __init__(self):
-            self.count = self.retreads = self.n_new = self.n_re = 0
-            self.km = self.worn = self.depth_sum = self.cost_new = self.km_new = self.km_re = 0.0
+            self.count = self.retreads = self.n_new = self.n_re = self.n_est = self.met = 0
+            self.km = self.worn = self.depth_sum = self.cost_new = self.km_new = self.km_re = self.est = 0.0
             self.depth_n = 0
 
     brands: dict[str, Agg] = {}
@@ -1104,6 +1107,9 @@ def intelligence(
     # Acumuladores globales nuevas (1V) vs reencauchadas (xR)
     g_km_new = g_km_re = 0.0
     g_n_new = g_n_re = 0
+    # Comparación vs "Estimado TYM" (meta por llanta)
+    g_est = g_kmest = 0.0   # suma estimado / suma km (de las que tienen estimado)
+    g_nest = g_met = 0
 
     for s in completed:
         brand = (s.brand or "—").strip() or "—"
@@ -1113,6 +1119,12 @@ def intelligence(
         is_re = life.endswith("R")
         # km de la vida completada (rendimiento real logrado)
         km = float(s.km_life or 0)
+        est = float(getattr(s, "estimado_km", 0) or 0)
+        if est > 0:
+            a.est += est; a.n_est += 1
+            g_est += est; g_kmest += km; g_nest += 1
+            if km >= est:
+                a.met += 1; g_met += 1
         if is_re:
             a.retreads += 1
             retread_savings += (_price(s.size, brand=s.brand) - _price(s.size, retread=True, brand=s.brand))
@@ -1157,6 +1169,10 @@ def intelligence(
             # desglose nuevas vs reencauchadas
             "newCount": a.n_new, "newAvgKm": round(avg_new), "newRend": _rend(avg_new),
             "reCount": a.n_re, "reAvgKm": round(avg_re), "reRend": _rend(avg_re),
+            # vs Estimado TYM (meta por llanta)
+            "estCount": a.n_est,
+            "vsEstimadoPct": round(a.km / a.est * 100, 1) if a.est else None,
+            "metRate": round(a.met / a.n_est * 100, 1) if a.n_est else None,
         })
 
     # ordenar por rendimiento (km promedio) descendente, solo marcas con muestra útil
@@ -1181,6 +1197,15 @@ def intelligence(
             "new": {"count": g_n_new, "avgKm": round(avg_new_g), "rendimientoPct": _rend(avg_new_g)},
             "retread": {"count": g_n_re, "avgKm": round(avg_re_g), "rendimientoPct": _rend(avg_re_g)},
             "retreadVsNewPct": round(avg_re_g / avg_new_g * 100, 1) if avg_new_g else 0,
+        },
+        # Comparación real vs "Estimado TYM" (meta por llanta)
+        "vsEstimado": {
+            "count": g_nest,
+            "achievedPct": round(g_kmest / g_est * 100, 1) if g_est else 0,   # km logrado vs meta
+            "metCount": g_met,
+            "metRate": round(g_met / g_nest * 100, 1) if g_nest else 0,       # % que cumplió su meta
+            "avgEstimado": round(g_est / g_nest) if g_nest else 0,
+            "avgKm": round(g_kmest / g_nest) if g_nest else 0,
         },
         "purchase": {
             "needNow": need_now, "needSoon": need_soon,
