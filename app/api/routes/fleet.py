@@ -217,6 +217,22 @@ async def upload_solomon(
     COL_MARCA, COL_MODELO, COL_MEDIDA = C("Marca"), C("Modelo"), C("Medida")
     COL_VIDA, COL_COCADA, COL_KMTOT = C("Vida"), C("Altura Cocada", "Cocada"), C("KMTotal", "KM Total")
     COL_COND = C("Condicion")
+    COL_INVO = C("Invt Orig Almacen", "Invt Orig Alma", "InvtOrig", "Invt Orig")
+
+    # ── Corrección de marcas mal cargadas como "VARIOS" ──
+    # El sistema SOLOMON deja muchas llantas con marca "VARIOS"; la marca real
+    # se deduce del MODELO. Mapa confirmado por TYMSAC (modelo normalizado → marca).
+    def _nm(s):
+        return "".join(ch for ch in str(s).upper() if ch.isalnum())
+    MODEL_BRAND = {
+        _nm("HF668"): "SUNFULL", _nm("BYS98"): "ANSU", _nm("Y126"): "DURATURN",
+        _nm("AL707"): "ANSU", _nm("BY912L"): "ANSU", _nm("GAM839"): "GITI",
+        _nm("GAM837"): "GITI", _nm("FLAMA 89"): "FENIXWAY", _nm("VALOR 96"): "FENIXWAY",
+    }
+    # Regla especial: las delanteras compradas en 2026 vienen con código
+    # CO225151 (columna "Invt Orig Almacen") → son DURATURN modelo Y237.
+    INVO_OVERRIDE = {"CO225151": ("DURATURN", "Y237")}
+
     # Recorrido de la VIDA ACTUAL = columna "Detalle Vida Original"
     # (= KMTotal - km de vidas anteriores). Para 1V equivale a KMTotal.
     COL_KMLIFE = C("Detalle Vida Original", "Detalle Vida", "Detalle Vida Actual")
@@ -290,6 +306,18 @@ async def upload_solomon(
             marca, modelo = g(b, COL_MARCA), g(b, COL_MODELO)
             medida_raw = g(b, COL_MEDIDA)
             medida = medida_map.get(medida_raw, medida_raw)
+
+        # ── Corregir marca/modelo ──
+        # 1) Por código de almacén (delanteras 2026 CO225151 → DURATURN Y237)
+        invo = g(b, COL_INVO).upper()
+        if invo in INVO_OVERRIDE:
+            marca, modelo = INVO_OVERRIDE[invo]
+        else:
+            # 2) Por modelo: reemplaza la marca real (corrige "VARIOS" y unifica)
+            real = MODEL_BRAND.get(_nm(modelo))
+            if real:
+                marca = real
+
         cocada = num(b, COL_COCADA)
         vida = g(b, COL_VIDA)
         km_total = num(b, COL_KMTOT)
