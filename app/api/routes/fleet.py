@@ -218,6 +218,7 @@ async def upload_solomon(
     COL_VIDA, COL_COCADA, COL_KMTOT = C("Vida"), C("Altura Cocada", "Cocada"), C("KMTotal", "KM Total")
     COL_COND = C("Condicion")
     COL_INVO = C("Invt Orig Almacen", "Invt Orig Alma", "InvtOrig", "Invt Orig")
+    COL_INVC = C("Cod.Invt Almacen", "Cod Invt Almacen", "CodInvt", "Cod.Invt Alma")
 
     # ── Corrección de marcas mal cargadas como "VARIOS" ──
     # El sistema SOLOMON deja muchas llantas con marca "VARIOS"; la marca real
@@ -231,7 +232,11 @@ async def upload_solomon(
     }
     # Regla especial: las delanteras compradas en 2026 vienen con código
     # CO225151 (columna "Invt Orig Almacen") → son DURATURN modelo Y237.
-    INVO_OVERRIDE = {"CO225151": ("DURATURN", "Y237")}
+    # Se compara de forma tolerante (mayúsculas, sin separadores y O≡0),
+    # porque el sistema mezcla la letra "O" con el cero "0".
+    def _code(s):
+        return "".join(ch for ch in str(s).upper() if ch.isalnum()).replace("O", "0")
+    INVO_OVERRIDE = {_code("CO225151"): ("DURATURN", "Y237")}
 
     # Recorrido de la VIDA ACTUAL = columna "Detalle Vida Original"
     # (= KMTotal - km de vidas anteriores). Para 1V equivale a KMTotal.
@@ -309,9 +314,11 @@ async def upload_solomon(
 
         # ── Corregir marca/modelo ──
         # 1) Por código de almacén (delanteras 2026 CO225151 → DURATURN Y237)
-        invo = g(b, COL_INVO).upper()
-        if invo in INVO_OVERRIDE:
-            marca, modelo = INVO_OVERRIDE[invo]
+        # El código puede estar en "Invt Orig Almacen" o en "Cod.Invt Almacen"
+        invo = _code(g(b, COL_INVO))
+        invc = _code(g(b, COL_INVC))
+        if invo in INVO_OVERRIDE or invc in INVO_OVERRIDE:
+            marca, modelo = INVO_OVERRIDE.get(invo) or INVO_OVERRIDE.get(invc)
         else:
             # 2) Por modelo: reemplaza la marca real (corrige "VARIOS" y unifica)
             real = MODEL_BRAND.get(_nm(modelo))
