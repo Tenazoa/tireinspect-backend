@@ -721,7 +721,7 @@ def fleet_stock(
         "life": r.life, "depthMm": r.depth_mm, "kmTotal": r.km_total,
         "ubicacion": r.ubicacion, "plate": r.plate, "condicion": r.condicion,
     } for r in items[:3000]]
-    top = lambda cnt: [{"label": k, "count": v} for k, v in cnt.most_common(20)]
+    top = lambda cnt: [{"label": k, "count": v} for k, v in cnt.most_common(50)]
     return {
         "total": len(rows),
         "filteredCount": len(items),
