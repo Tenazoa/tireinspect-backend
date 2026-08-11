@@ -329,6 +329,22 @@ async def upload_solomon(
     def g(b, col):
         return c(b.get(col)) if col else ""
 
+    # ── Mapa código → medida (para completar las que están vacías) ──
+    # Para cada código de almacén (Invt Orig / Cod.Invt) se toma la medida
+    # más frecuente entre las filas que SÍ la tienen; luego se usa para
+    # rellenar las que vienen sin medida (p.ej. WLY-12R → 12R22.5).
+    from collections import Counter as _Ctr
+    _code_size_ct: dict[str, "_Ctr"] = {}
+    for _i in range(len(bd)):
+        _b = bd.iloc[_i]
+        _md = _norm_size(g(_b, COL_MEDIDA))
+        if not _md:
+            continue
+        for _cd in (_code(g(_b, COL_INVO)), _code(g(_b, COL_INVC))):
+            if _cd:
+                _code_size_ct.setdefault(_cd, _Ctr())[_md] += 1
+    _code_size = {k: v.most_common(1)[0][0] for k, v in _code_size_ct.items()}
+
     for i in range(len(bd)):
         b = bd.iloc[i]
         m = cam.iloc[i] if aligned else None
@@ -357,6 +373,11 @@ async def upload_solomon(
                 marca = real
         # 3) Normalizar la medida a las 5 estándar (corrige typos del SOLOMON)
         medida = _norm_size(medida)
+        # 4) Si la llanta no trae medida, completarla por su código de almacén
+        if not medida:
+            cd = _code(g(b, COL_INVO)) or _code(g(b, COL_INVC))
+            if cd in _code_size:
+                medida = _code_size[cd]
 
         cocada = num(b, COL_COCADA)
         vida = g(b, COL_VIDA)
