@@ -737,6 +737,55 @@ def fleet_stock(
     }
 
 
+@router.get("/stats/rolling")
+def rolling_stats(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Llantas RODANDO (montadas, sin repuestos) en unidades ACTIVAS, separadas
+    por tractos / carretas / camionetas, cada una con su desglose para gráficos."""
+    from collections import Counter
+
+    def _p(s):
+        return (s or "").upper().replace("-", "").replace(" ", "")
+
+    def _is_spare(pos):
+        p = (pos or "").upper()
+        return p in ("RPT", "P13") or p.startswith("SP")
+
+    vehicles = {_p(v.plate): v for v in db.query(Vehicle).filter(Vehicle.company_id == inspector.company_id).all()}
+    specs = db.query(TireSpec).filter(TireSpec.company_id == inspector.company_id).all()
+
+    TYPES = {"truck": "Tractos", "trailer": "Carretas", "camioneta": "Camionetas"}
+    groups = {k: {"label": v, "type": k, "tires": 0, "units": set(),
+                  "byBrand": Counter(), "bySize": Counter(), "byLife": Counter()}
+              for k, v in TYPES.items()}
+
+    for s in specs:
+        v = vehicles.get(_p(s.plate))
+        if not v or getattr(v, "active", True) is False:
+            continue
+        if _is_spare(s.position):
+            continue
+        g = groups.get(v.type)
+        if not g:
+            continue
+        g["tires"] += 1
+        g["units"].add(_p(v.plate))
+        g["byBrand"][(s.brand or "—").strip() or "—"] += 1
+        g["bySize"][(s.size or "—").strip() or "—"] += 1
+        life = (s.life or "—").strip().upper() or "—"
+        g["byLife"]["1V" if life == "1V" else ("Reencauchada" if life.endswith("R") else life)] += 1
+
+    def pack(g):
+        top = lambda c, n=12: [{"label": k, "count": v} for k, v in c.most_common(n)]
+        return {"label": g["label"], "type": g["type"], "tires": g["tires"], "units": len(g["units"]),
+                "byBrand": top(g["byBrand"]), "bySize": top(g["bySize"]), "byLife": top(g["byLife"])}
+
+    total = sum(g["tires"] for g in groups.values())
+    return {"totalRolling": total, "groups": [pack(groups[k]) for k in TYPES]}
+
+
 @router.get("/stats/fleet")
 def fleet_vehicle_stats(
     db: Session = Depends(get_db),
