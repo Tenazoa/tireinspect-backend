@@ -236,7 +236,10 @@ async def upload_solomon(
     # porque el sistema mezcla la letra "O" con el cero "0".
     def _code(s):
         return "".join(ch for ch in str(s).upper() if ch.isalnum()).replace("O", "0")
-    INVO_OVERRIDE = {_code("CO225151"): ("DURATURN", "Y237")}
+    INVO_OVERRIDE = {
+        _code("CO225151"): ("DURATURN", "Y237"),
+        _code("C0332951"): ("DURATURN", "Y237"),
+    }
 
     # ── Normalización de MEDIDAS ──
     # Medidas estándar de la flota: 295/80R22.5, 11R22.5, 12R22.5,
