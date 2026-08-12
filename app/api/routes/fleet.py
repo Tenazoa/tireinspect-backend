@@ -761,25 +761,37 @@ def fleet_stock(
     db: Session = Depends(get_db),
     inspector: Inspector = Depends(get_current_inspector),
 ):
-    """Inventario de llantas en ubicaciones distintas de la unidad (almacén, reencauche, etc.)."""
+    """Inventario COMPLETO de llantas: montadas (05. Unidad) + almacén, reencauche,
+    ciclo final, vendidas, etc. (todo el parque)."""
     from collections import Counter
-    rows = db.query(TireStock).filter(TireStock.company_id == inspector.company_id).all()
-    by_ubic = Counter(r.ubicacion or "Sin ubicación" for r in rows)
-    items = rows
-    if ubicacion and ubicacion != "all":
-        items = [r for r in items if (r.ubicacion or "") == ubicacion]
-    if search:
-        q = search.upper()
-        items = [r for r in items if (r.code or "").upper().find(q) >= 0
-                 or f"{r.brand or ''} {r.model or ''}".upper().find(q) >= 0]
-    by_brand = Counter((r.brand or "—").strip() or "—" for r in items)
-    by_size = Counter((r.size or "—").strip() or "—" for r in items)
-    by_life = Counter((r.life or "—").strip() or "—" for r in items)
-    out = [{
+    cid = inspector.company_id
+    UNIDAD = "05. UNIDAD (montada)"
+    # Todas las llantas: inventario (TireStock) + montadas (TireSpec)
+    rows = [{
         "code": r.code, "brand": r.brand, "model": r.model, "size": r.size,
         "life": r.life, "depthMm": r.depth_mm, "kmTotal": r.km_total,
-        "ubicacion": r.ubicacion, "plate": r.plate, "condicion": r.condicion,
-    } for r in items[:3000]]
+        "ubicacion": r.ubicacion or "Sin ubicación", "plate": r.plate, "condicion": r.condicion,
+    } for r in db.query(TireStock).filter(TireStock.company_id == cid).all()]
+    for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
+        rows.append({
+            "code": s.code, "brand": s.brand, "model": s.model, "size": s.size,
+            "life": s.life, "depthMm": s.last_depth_mm, "kmTotal": s.km_total,
+            "ubicacion": UNIDAD, "plate": s.plate, "condicion": s.position,
+        })
+
+    by_ubic = Counter(r["ubicacion"] for r in rows)
+    items = rows
+    if ubicacion and ubicacion != "all":
+        items = [r for r in items if r["ubicacion"] == ubicacion]
+    if search:
+        q = search.upper()
+        items = [r for r in items if (r["code"] or "").upper().find(q) >= 0
+                 or f"{r['brand'] or ''} {r['model'] or ''}".upper().find(q) >= 0
+                 or (r["plate"] or "").upper().find(q) >= 0]
+    by_brand = Counter((r["brand"] or "—").strip() or "—" for r in items)
+    by_size = Counter((r["size"] or "—").strip() or "—" for r in items)
+    by_life = Counter((r["life"] or "—").strip() or "—" for r in items)
+    out = items[:3000]
     top = lambda cnt: [{"label": k, "count": v} for k, v in cnt.most_common(50)]
     return {
         "total": len(rows),
