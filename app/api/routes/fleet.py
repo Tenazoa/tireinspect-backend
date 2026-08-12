@@ -1108,6 +1108,75 @@ def _loc_bucket(ubic: str) -> str:
 LOC_ORDER = ["Rodando", "Almacén", "Reencauche", "Fin de vida", "Vendidas", "Otras"]
 
 
+@router.get("/export-all")
+def export_all(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Descarga TODO en un Excel con varias hojas: Flota, Inventario,
+    Comparativo de marcas, Ubicaciones y Duplicados."""
+    from fastapi.responses import StreamingResponse
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+
+    wb = openpyxl.Workbook()
+    head_fill = PatternFill("solid", fgColor="0F2050")
+    head_font = Font(color="FFFFFF", bold=True)
+
+    def sheet(title, headers, rows):
+        ws = wb.create_sheet(title[:31])
+        ws.append(headers)
+        for c in ws[1]:
+            c.fill = head_fill; c.font = head_font
+        for r in rows:
+            ws.append(r)
+        for i, h in enumerate(headers, 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = max(12, len(str(h)) + 4)
+        ws.freeze_panes = "A2"
+
+    cid = inspector.company_id
+    # Flota
+    vehs = db.query(Vehicle).filter(Vehicle.company_id == cid).all()
+    sheet("Flota", ["Placa", "Tipo", "Marca", "Modelo", "Año", "Activo", "Llantas"],
+          [[v.plate, v.type, v.brand, v.model, v.year, "Sí" if getattr(v, "active", True) else "No",
+            len(v.tire_positions or [])] for v in vehs])
+
+    # Inventario completo
+    stock = fleet_stock(ubicacion="all", search=None, db=db, inspector=inspector)
+    sheet("Inventario", ["Código", "Marca", "Modelo", "Medida", "Vida", "Cocada mm", "Km", "Ubicación", "Placa"],
+          [[r["code"], r["brand"], r["model"], r["size"], r["life"], r["depthMm"], r["kmTotal"], r["ubicacion"], r["plate"]]
+           for r in stock["items"]])
+
+    # Comparativo de marcas
+    intel = intelligence(size="all", db=db, inspector=inspector)
+    sheet("Comparativo marcas", ["Marca", "Llantas", "Nuevas km", "Reenc km", "Km prom", "vs Meta %", "Precio S/", "Costo/km S/"],
+          [[r["label"], r["count"], r["newAvgKm"], r["reAvgKm"], r["avgKm"], r.get("vsEstimadoPct"), r["avgPrice"], r["costPerKm"]]
+           for r in intel["brands"]])
+
+    # Ubicación por marca
+    locs = brand_locations(size="all", db=db, inspector=inspector)
+    sheet("Ubicación por marca", ["Marca", "Total"] + locs["order"],
+          [[b["brand"], b["total"]] + [b[k] for k in locs["order"]] for b in locs["brands"]])
+
+    # Duplicados
+    dups = duplicate_codes(db=db, inspector=inspector)
+    drows = []
+    for d in dups["duplicates"]:
+        for rec in d["records"]:
+            drows.append([d["code"], d["count"], rec["brand"], rec["model"], rec["size"], rec["life"], rec["where"], rec.get("plate")])
+    sheet("Duplicados", ["Código", "Repeticiones", "Marca", "Modelo", "Medida", "Vida", "Ubicación", "Placa"], drows)
+
+    if "Sheet" in wb.sheetnames:
+        del wb["Sheet"]
+    import io as _io
+    buf = _io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=TYMSAC_completo.xlsx"})
+
+
 @router.get("/duplicate-codes")
 def duplicate_codes(
     db: Session = Depends(get_db),
