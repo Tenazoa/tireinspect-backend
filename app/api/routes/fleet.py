@@ -1141,11 +1141,12 @@ def export_all(
           [[v.plate, v.type, v.brand, v.model, v.year, "Sí" if getattr(v, "active", True) else "No",
             len(v.tire_positions or [])] for v in vehs])
 
-    # Inventario completo
-    stock = fleet_stock(ubicacion="all", search=None, db=db, inspector=inspector)
-    sheet("Inventario", ["Código", "Marca", "Modelo", "Medida", "Vida", "Cocada mm", "Km", "Ubicación", "Placa"],
-          [[r["code"], r["brand"], r["model"], r["size"], r["life"], r["depthMm"], r["kmTotal"], r["ubicacion"], r["plate"]]
-           for r in stock["items"]])
+    # Inventario COMPLETO (todo el parque, sin tope): stock + montadas
+    inv_rows = [[r.code, r.brand, r.model, r.size, r.life, r.depth_mm, r.km_total, r.ubicacion, r.plate]
+                for r in db.query(TireStock).filter(TireStock.company_id == cid).all()]
+    inv_rows += [[s.code, s.brand, s.model, s.size, s.life, s.last_depth_mm, s.km_total, "05. UNIDAD (montada)", s.plate]
+                 for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all()]
+    sheet("Inventario", ["Código", "Marca", "Modelo", "Medida", "Vida", "Cocada mm", "Km", "Ubicación", "Placa"], inv_rows)
 
     # Comparativo de marcas
     intel = intelligence(size="all", db=db, inspector=inspector)
