@@ -150,7 +150,8 @@ def _zone_depths(roi: np.ndarray, base_depth: float) -> tuple[float, float, floa
             factor = t / avg if avg > 0 else 1.0
             # limitar variación a ±35% del valor base
             factor = max(0.65, min(1.35, factor))
-            out.append(round(max(0.5, min(9.0, base_depth * factor)), 1))
+            # Tope 24mm (cocada máxima de camión), piso 1mm
+            out.append(round(max(1.0, min(24.0, base_depth * factor)), 1))
         return out[0], out[1], out[2]
     except Exception:
         return base_depth, base_depth, base_depth
@@ -320,9 +321,12 @@ def _score_to_wear_level(score: int) -> tuple[str, float]:
 
 
 def _score_to_depth(score: int) -> float:
-    """Estima profundidad de surco en mm desde el score de condición."""
-    # Interpolación: 100 → 8.0mm (nueva), 0 → 0.5mm (sin surco)
-    return round(np.interp(score, [0, 20, 40, 65, 85, 100], [0.5, 1.5, 3.0, 5.0, 7.0, 8.0]), 1)
+    """Estima profundidad de surco en mm desde el score de condición.
+    Calibrado para llantas de CAMIÓN/CARRETA (cocada nueva ~16-22mm, límite
+    3-5mm, máximo 24mm) — antes estaba calibrado para autos (tope 8mm) y por
+    eso subestimaba la medición real."""
+    # Interpolación: 100 → 22mm (nueva), 0 → 2mm (sin surco útil)
+    return round(np.interp(score, [0, 20, 40, 65, 85, 100], [2.0, 4.0, 7.0, 11.0, 16.0, 22.0]), 1)
 
 
 def _build_notes(wear_level: str, pattern: str, defects: list, tex: float, col: float) -> str:
