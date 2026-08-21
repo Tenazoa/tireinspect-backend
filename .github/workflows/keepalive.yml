@@ -1,12 +1,13 @@
 name: Keep alive (Render + Supabase)
 
-# Render (plan gratis) apaga el servicio tras ~15 min sin tráfico.
-# Supabase (plan gratis) pausa el proyecto tras 7 días sin actividad.
-# Este workflow pinguea /health cada 10 min: mantiene Render despierto
-# y, al tocar la BD (SELECT 1), también mantiene activo Supabase.
+# Render (plan gratis) da 750 horas/mes. Mantenerlo despierto 24/7 las agota
+# y Render suspende el servicio. Por eso pingueamos SOLO en horario laboral
+# (6 AM–9 PM Perú = 11:00–02:00 UTC), así queda rápido cuando se trabaja,
+# duerme de noche, y NO supera las 750 horas gratis.
+# IMPORTANTE: para que esto sirva, NO debe haber otro pinger 24/7 (UptimeRobot).
 on:
   schedule:
-    - cron: '*/10 * * * *'   # cada 10 minutos (GitHub puede retrasarlo unos min)
+    - cron: '*/10 0-2,11-23 * * *'   # cada 10 min, solo 06:00–21:00 hora Perú
   workflow_dispatch:
 
 # Evita que se acumulen ejecuciones si una tarda
