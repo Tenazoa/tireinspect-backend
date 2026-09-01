@@ -129,6 +129,23 @@ class PhotoBlob(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
+class TireDetalle(Base):
+    """Reporte 'Detalle de Llantas' (LL.018.00) de SOLOMON: historial rico por
+    llanta (cocada primera/actual, fechas, chofer, observaciones, etc.).
+    Se guardan campos clave indexados + todo lo demás en `data` (JSON)."""
+    __tablename__ = "tire_detalle"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    code: Mapped[str | None] = mapped_column(String, nullable=True, index=True)   # nroLlanta
+    brand: Mapped[str | None] = mapped_column(String, nullable=True)
+    size: Mapped[str | None] = mapped_column(String, nullable=True)
+    plate: Mapped[str | None] = mapped_column(String, nullable=True)
+    estado: Mapped[str | None] = mapped_column(String, nullable=True, index=True)  # TipoEstado
+    tipo_unidad: Mapped[str | None] = mapped_column(String, nullable=True)
+    data: Mapped[dict | None] = mapped_column(JSON, nullable=True)                 # todas las columnas
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
 class TireStock(Base):
     """
     Llantas que NO están montadas en unidades (ubicación distinta de '05. UNIDAD'):

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle
 
 
 def _audit(db, inspector, action, target, detail):
@@ -1176,6 +1176,135 @@ def export_all(
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=TYMSAC_completo.xlsx"})
+
+
+# ── Limpieza reutilizable para el reporte "Detalle de Llantas" ───────────────
+_DET_BRAND_PREFIX = [
+    ("BYS", "ANSU"), ("BY", "ANSU"), ("AL", "ANSU"), ("HF", "HIFLY"),
+    ("GAM", "GITI"), ("VALOR", "FENIXWAY"), ("FLAMA", "FENIXWAY"),
+    ("AHS", "STEELMARK"), ("Y", "DURATURN"), ("BA", "BLACKLION"), ("RZ", "RELINO"),
+]
+
+
+def _det_brand(modelo, marca):
+    m = (marca or "").strip()
+    if m and m.upper() != "VARIOS":
+        return m
+    mod = (modelo or "").strip().upper()
+    for pref, mk in _DET_BRAND_PREFIX:
+        if mod.startswith(pref):
+            return mk
+    return m or "VARIOS"
+
+
+def _det_medida(raw):
+    import re as _re
+    if not raw or not str(raw).strip():
+        return ""
+    t = str(raw).upper()
+    t = _re.sub(r"\d+\s*PR\b", "", t)
+    t = _re.sub(r"\d{3}[A-Z]\b", "", t)
+    d = _re.sub(r"[^0-9]", "", t)
+    if d.startswith("295") or d.startswith("297"):
+        return "295/80R22.5"
+    if d.startswith("27570"): return "275/70R22.5"
+    if d.startswith("425") or d.startswith("426"): return "425/65R22.5"
+    if d.startswith("24575"): return "245/75R16"
+    if d.startswith("24570"): return "245/70R16"
+    if d.startswith("23575"): return "235/75R15"
+    if d.startswith("18565"): return "185/65R14"
+    if d.startswith("12") and "225" in d: return "12R22.5"
+    if d.startswith("11") and "225" in d: return "11R22.5"
+    if d.startswith("1100") or d.startswith("110"): return "11.00-20"
+    if d.startswith("1200") or d.startswith("120"): return "12.00-20"
+    if d.startswith("11"): return "11R22.5"
+    return str(raw).strip()
+
+
+@router.post("/upload-detalle")
+async def upload_detalle(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Carga el reporte 'Detalle de Llantas' (LL.018.00) de SOLOMON (CSV o Excel).
+    Limpia marca (VARIOS→real por modelo) y medida, y lo guarda para verlo en la web."""
+    import pandas as pd
+    raw = await file.read()
+    name = (file.filename or "").lower()
+    try:
+        if name.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(raw), dtype=str, encoding="utf-8-sig", keep_default_na=False)
+        else:
+            eng = "xlrd" if name.endswith(".xls") else "openpyxl"
+            df = pd.read_excel(io.BytesIO(raw), dtype=str, engine=eng, keep_default_na=False)
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo leer el archivo: {e}")
+
+    df.columns = [str(c).strip().lstrip("﻿") for c in df.columns]
+    cols = {c.lower(): c for c in df.columns}
+
+    def col(*cands):
+        for c in cands:
+            if c.lower() in cols:
+                return cols[c.lower()]
+        return None
+
+    C_COD = col("nroLlanta", "N. de llanta", "Codigo")
+    C_MOD = col("Modelo"); C_MAR = col("Marca"); C_MED = col("Medida")
+    C_PLA = col("Placa"); C_EST = col("TipoEstado", "Estado"); C_TU = col("TipoUnidad")
+    if not C_COD:
+        raise HTTPException(400, f"No encontré la columna de código (nroLlanta). Columnas: {list(df.columns)[:15]}")
+
+    cid = inspector.company_id
+    db.query(TireDetalle).filter(TireDetalle.company_id == cid).delete()
+    count = 0
+    for _, r in df.iterrows():
+        row = {k: ("" if v is None else str(v).strip()) for k, v in r.items()}
+        marca = _det_brand(row.get(C_MOD, ""), row.get(C_MAR, ""))
+        medida = _det_medida(row.get(C_MED, ""))
+        if C_MAR: row[C_MAR] = marca
+        if C_MED: row[C_MED] = medida
+        db.add(TireDetalle(
+            company_id=cid, code=row.get(C_COD) or None, brand=marca or None,
+            size=medida or None, plate=(row.get(C_PLA) if C_PLA else None) or None,
+            estado=(row.get(C_EST) if C_EST else None) or None,
+            tipo_unidad=(row.get(C_TU) if C_TU else None) or None, data=row,
+        ))
+        count += 1
+    db.commit()
+    _audit(db, inspector, "cargar-detalle", file.filename or "archivo", f"{count} llantas")
+    return {"ok": True, "count": count, "columns": list(df.columns)}
+
+
+@router.get("/detalle")
+def get_detalle(
+    search: str = "",
+    estado: str = "all",
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Devuelve el Detalle de Llantas con filtros + conteos para la web."""
+    from collections import Counter
+    rows = db.query(TireDetalle).filter(TireDetalle.company_id == inspector.company_id).all()
+    by_estado = Counter((r.estado or "—") for r in rows)
+    by_marca = Counter((r.brand or "—") for r in rows)
+    by_unidad = Counter((r.tipo_unidad or "—") for r in rows)
+    items = rows
+    if estado and estado != "all":
+        items = [r for r in items if (r.estado or "") == estado]
+    if search:
+        q = search.upper()
+        items = [r for r in items if q in (r.code or "").upper()
+                 or q in (r.brand or "").upper() or q in (r.plate or "").upper()]
+    columns = list(rows[0].data.keys()) if rows and rows[0].data else []
+    top = lambda c: [{"label": k, "count": v} for k, v in c.most_common(50)]
+    return {
+        "total": len(rows), "filteredCount": len(items), "columns": columns,
+        "byEstado": sorted([{"label": k, "count": v} for k, v in by_estado.items()], key=lambda x: -x["count"]),
+        "byMarca": top(by_marca), "byUnidad": top(by_unidad),
+        "items": [r.data for r in items[:3000]],
+    }
 
 
 @router.get("/duplicate-codes")
