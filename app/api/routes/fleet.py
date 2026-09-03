@@ -1277,6 +1277,191 @@ async def upload_detalle(
     return {"ok": True, "count": count, "columns": list(df.columns)}
 
 
+def _km_map_from_consumo(raw: bytes):
+    """Del reporte 'Consumo de Llantas' saca por NroLlanta el km recorrido
+    (aprox. = odómetro máx - mín del historial) y el km de la última vida.
+    Devuelve (km_total_map, km_life_map)."""
+    import pandas as pd
+    from collections import defaultdict
+    try:
+        cf = pd.read_csv(io.BytesIO(raw), dtype=str, encoding="utf-8-sig", keep_default_na=False)
+    except Exception:
+        return {}, {}
+    cf.columns = [str(c).strip().lstrip("﻿") for c in cf.columns]
+    cols = {c.lower(): c for c in cf.columns}
+    def col(*cs):
+        for c in cs:
+            if c.lower() in cols:
+                return cols[c.lower()]
+        return None
+    K_COD, K_KM, K_VIDA = col("NroLlanta"), col("KM"), col("CicloVida")
+    if not K_COD or not K_KM:
+        return {}, {}
+    def fnum(v):
+        try:
+            x = float(str(v).replace(",", ""))
+            return x if x > 0 else None
+        except Exception:
+            return None
+    by_tire = defaultdict(list)          # code -> [(km, vida)]
+    for _, r in cf.iterrows():
+        code = str(r.get(K_COD) or "").strip()
+        km = fnum(r.get(K_KM))
+        if code and km is not None:
+            by_tire[code].append((km, str(r.get(K_VIDA) or "").strip() if K_VIDA else ""))
+    km_total, km_life = {}, {}
+    for code, vals in by_tire.items():
+        kms = [k for k, _ in vals]
+        if not kms:
+            continue
+        km_total[code] = round(max(kms) - min(kms), 0)   # recorrido total (proxy)
+        if K_VIDA:
+            last_vida = vals[-1][1]
+            lk = [k for k, v in vals if v == last_vida]
+            if len(lk) >= 2:
+                km_life[code] = round(max(lk) - min(lk), 0)
+    return km_total, km_life
+
+
+@router.post("/sync-full")
+async def sync_full(
+    detalle: UploadFile = File(...),
+    consumo: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Sincronización COMPLETA automática desde los CSV del export SQL de SOLOMON:
+    reconstruye Detalle + Flota (montadas) + Inventario, con km del reporte Consumo.
+    Reemplaza a la carga manual del Excel SOLOMON."""
+    import pandas as pd
+    raw = await detalle.read()
+    name = (detalle.filename or "").lower()
+    try:
+        if name.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(raw), dtype=str, encoding="utf-8-sig", keep_default_na=False)
+        else:
+            eng = "xlrd" if name.endswith(".xls") else "openpyxl"
+            df = pd.read_excel(io.BytesIO(raw), dtype=str, engine=eng, keep_default_na=False)
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo leer el Detalle: {e}")
+    df.columns = [str(c).strip().lstrip("﻿") for c in df.columns]
+    cols = {c.lower(): c for c in df.columns}
+
+    def col(*cands):
+        for c in cands:
+            if c.lower() in cols:
+                return cols[c.lower()]
+        return None
+
+    C_COD = col("nroLlanta", "N. de llanta", "Codigo")
+    C_MOD, C_MAR, C_MED = col("Modelo"), col("Marca"), col("Medida")
+    C_PLA, C_EST, C_TU = col("Placa"), col("TipoEstado", "Estado"), col("TipoUnidad")
+    C_POS = col("PosicionActual", "Posicion")
+    C_VIDA = col("nCicloVida", "Vida", "CicloVida")
+    C_COC = col("CocadaActual", "Cocada")
+    C_KMIN = col("KmMinimo")
+    if not C_COD:
+        raise HTTPException(400, f"No encontré la columna de código (nroLlanta). Columnas: {list(df.columns)[:15]}")
+
+    # km del Consumo (opcional)
+    km_total_map, km_life_map = {}, {}
+    if consumo is not None:
+        km_total_map, km_life_map = _km_map_from_consumo(await consumo.read())
+
+    def fnum(v):
+        try:
+            x = float(str(v).replace(",", ""))
+            return x
+        except Exception:
+            return None
+
+    cid = inspector.company_id
+    # ── 1) Detalle (tal cual, con marca/medida limpias) ──
+    db.query(TireDetalle).filter(TireDetalle.company_id == cid).delete()
+    fleet: dict[str, dict] = {}
+    stock: list[dict] = []
+    det_count = 0
+    for _, r in df.iterrows():
+        row = {k: ("" if v is None else str(v).strip()) for k, v in r.items()}
+        codigo = row.get(C_COD) or ""
+        marca = _det_brand(row.get(C_MOD, ""), row.get(C_MAR, ""))
+        medida = _det_medida(row.get(C_MED, ""))
+        if C_MAR: row[C_MAR] = marca
+        if C_MED: row[C_MED] = medida
+        db.add(TireDetalle(
+            company_id=cid, code=codigo or None, brand=marca or None,
+            size=medida or None, plate=(row.get(C_PLA) if C_PLA else None) or None,
+            estado=(row.get(C_EST) if C_EST else None) or None,
+            tipo_unidad=(row.get(C_TU) if C_TU else None) or None, data=row,
+        ))
+        det_count += 1
+
+        # ── datos para flota / inventario ──
+        ubic = (row.get(C_EST) if C_EST else "") or "Sin ubicación"
+        vida = (row.get(C_VIDA) if C_VIDA else "") or ""
+        cocada = fnum(row.get(C_COC)) if C_COC else None
+        modelo = row.get(C_MOD, "") if C_MOD else ""
+        plate = (row.get(C_PLA, "") if C_PLA else "").upper().replace(" ", "").replace("-", "")
+        pos = (row.get(C_POS) if C_POS else "") or ""
+        tipo = (row.get(C_TU) if C_TU else "") or ""
+        kmt = km_total_map.get(codigo)
+        kml = km_life_map.get(codigo)
+        if (kml is None or kml == 0) and vida.upper() in ("1V", "1"):
+            kml = kmt
+        estimado = fnum(row.get(C_KMIN)) if C_KMIN else None
+
+        if ubic.upper().startswith("05") and plate and pos:
+            rec = {"plate": plate, "position": pos, "brand": marca, "model": modelo,
+                   "size": medida, "lastDepthMm": cocada, "code": codigo, "life": vida,
+                   "kmTotal": kmt, "kmLife": kml, "estimado": estimado}
+            fleet.setdefault(plate, {"type": tipo, "tires": {}})["tires"][pos] = rec
+        else:
+            stock.append({
+                "code": codigo or None, "brand": marca or None, "model": modelo or None,
+                "size": medida or None, "life": vida or None, "depth_mm": cocada,
+                "km_total": kmt, "km_life": kml, "estimado_km": estimado,
+                "ubicacion": ubic, "plate": plate or None, "condicion": None,
+            })
+
+    # ── 2) Flota (reemplaza specs por placa; crea vehículo si falta) ──
+    vehicles_created = specs_created = 0
+    for plate, v in fleet.items():
+        positions = list(v["tires"].keys())
+        vtype = _infer_type(v["type"], len(positions))
+        vehicle = db.query(Vehicle).filter(Vehicle.plate == plate).first()
+        if not vehicle:
+            db.add(Vehicle(id=str(uuid.uuid4()), plate=plate, brand="—", model="—",
+                           type=vtype, axle_count=3, tire_positions=positions, company_id=cid))
+            vehicles_created += 1
+        else:
+            vehicle.tire_positions = positions
+        db.query(TireSpec).filter(TireSpec.plate == plate).delete()
+        for pos, t in v["tires"].items():
+            db.add(TireSpec(
+                id=str(uuid.uuid4()), plate=plate, position=pos,
+                brand=t["brand"], model=t["model"], size=t["size"],
+                last_depth_mm=t["lastDepthMm"], code=t["code"], life=t["life"],
+                km_total=t.get("kmTotal"), km_life=t.get("kmLife"), estimado_km=t.get("estimado"),
+                vehicle_type=vtype, company_id=cid,
+            ))
+            specs_created += 1
+
+    # ── 3) Inventario (reemplaza todo) ──
+    db.query(TireStock).filter(TireStock.company_id == cid).delete()
+    for srec in stock:
+        db.add(TireStock(id=str(uuid.uuid4()), company_id=cid, **srec))
+    db.commit()
+
+    from .inspections import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+    _audit(db, inspector, "cargar-detalle", detalle.filename or "archivo", f"{det_count} llantas")
+    _audit(db, inspector, "cargar-solomon", "sync-full (CSV)",
+           f"{specs_created} en flota · {len(stock)} en inventario · km={'Consumo' if km_total_map else 'no'}")
+    return {"ok": True, "detalle": det_count, "flota": specs_created,
+            "inventario": len(stock), "vehiculosNuevos": vehicles_created,
+            "kmDesdeConsumo": bool(km_total_map)}
+
+
 @router.get("/detalle")
 def get_detalle(
     search: str = "",
