@@ -758,6 +758,7 @@ def fleet_performance(
 def fleet_stock(
     ubicacion: Optional[str] = None,
     search: Optional[str] = None,
+    onlyDuplicates: bool = False,
     db: Session = Depends(get_db),
     inspector: Inspector = Depends(get_current_inspector),
 ):
@@ -781,6 +782,12 @@ def fleet_stock(
 
     by_ubic = Counter(r["ubicacion"] for r in rows)
     items = rows
+    # Solo códigos de fuego REPETIDos (aparecen >1 vez en todo el parque).
+    # Se filtra en el servidor para no perderlos por el tope de 3000 ítems.
+    if onlyDuplicates:
+        code_ct = Counter((r["code"] or "").strip() for r in rows if (r["code"] or "").strip())
+        dupset = {c for c, n in code_ct.items() if n > 1}
+        items = [r for r in items if (r["code"] or "").strip() in dupset]
     if ubicacion and ubicacion != "all":
         items = [r for r in items if r["ubicacion"] == ubicacion]
     if search:
