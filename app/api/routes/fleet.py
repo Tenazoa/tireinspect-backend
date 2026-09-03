@@ -7,6 +7,7 @@ Carga de flota desde SOLOMON y autollenado de inspección.
 """
 import uuid
 import io
+import re
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -1423,10 +1424,28 @@ async def sync_full(
             return None
 
     cid = inspector.company_id
-    # ── 1) Detalle (tal cual, con marca/medida limpias) ──
+    C_FING = col("FechaIngreso"); C_FEC = col("Fecha")
+
+    def _dkey(row):
+        """Convierte una fecha dd/mm/yyyy en (yyyy,mm,dd) para ordenar; 0 si no hay."""
+        for cc in (C_FING, C_FEC):
+            if not cc:
+                continue
+            s = str(row.get(cc) or "").strip()
+            m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", s)
+            if m:
+                d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                return (y, mo, d)
+        return (0, 0, 0)
+
+    # ── 1) Detalle (todas las filas, histórico) + selección de estado ACTUAL por código ──
+    # El Detalle trae cada llanta en varias filas (montada, vendida, ciclo final…).
+    # Para Flota/Inventario cada CÓDIGO va UNA sola vez, en su estado actual:
+    # montada (05) manda; si no, gana la fila con fecha más reciente.
     db.query(TireDetalle).filter(TireDetalle.company_id == cid).delete()
-    fleet: dict[str, dict] = {}
-    stock: list[dict] = []
+    fleet_cand: dict[str, dict] = {}          # code -> rec montada (con fecha)
+    stock_cand: dict[str, tuple] = {}         # code -> (dkey, rec)
+    stock_nocode: list[dict] = []             # filas sin código (no se pueden dedupe)
     det_count = 0
     for _, r in df.iterrows():
         row = {k: ("" if v is None else str(v).strip()) for k, v in r.items()}
@@ -1460,19 +1479,40 @@ async def sync_full(
         if (kml is None or kml == 0) and vida.upper() in ("1V", "1"):
             kml = kmt
         estimado = fnum(row.get(C_KMIN)) if C_KMIN else None
+        dk = _dkey(row)
 
         if ubic.upper().startswith("05") and plate and pos:
             rec = {"plate": plate, "position": pos, "brand": marca, "model": modelo,
                    "size": medida, "lastDepthMm": cocada, "code": codigo, "life": vida,
-                   "kmTotal": kmt, "kmLife": kml, "estimado": estimado}
-            fleet.setdefault(plate, {"type": tipo, "tires": {}})["tires"][pos] = rec
+                   "kmTotal": kmt, "kmLife": kml, "estimado": estimado, "type": tipo, "_dk": dk}
+            # montada gana a otra montada por fecha más reciente
+            if codigo:
+                prev = fleet_cand.get(codigo)
+                if not prev or dk >= prev["_dk"]:
+                    fleet_cand[codigo] = rec
+            else:
+                fleet_cand["__nc_%d" % det_count] = rec
         else:
-            stock.append({
+            srec = {
                 "code": codigo or None, "brand": marca or None, "model": modelo or None,
                 "size": medida or None, "life": vida or None, "depth_mm": cocada,
                 "km_total": kmt, "km_life": kml, "estimado_km": estimado,
                 "ubicacion": ubic, "plate": plate or None, "condicion": None,
-            })
+            }
+            if codigo:
+                prev = stock_cand.get(codigo)
+                if not prev or dk >= prev[0]:
+                    stock_cand[codigo] = (dk, srec)
+            else:
+                stock_nocode.append(srec)
+
+    # ── Consolidar: cada código una sola vez. Montada manda sobre inventario. ──
+    fleet: dict[str, dict] = {}
+    for rec in fleet_cand.values():
+        fleet.setdefault(rec["plate"], {"type": rec["type"], "tires": {}})["tires"][rec["position"]] = rec
+    montada_codes = {rec["code"] for rec in fleet_cand.values() if rec.get("code")}
+    stock: list[dict] = [srec for code, (_dk, srec) in stock_cand.items()
+                         if code not in montada_codes] + stock_nocode
 
     # ── 2) Flota (reemplaza specs por placa; crea vehículo si falta) ──
     vehicles_created = specs_created = 0
