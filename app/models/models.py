@@ -204,3 +204,54 @@ class TireSpec(Base):
     estimado_km: Mapped[float | None] = mapped_column(Float, nullable=True)  # meta "Estimado TYM"
     vehicle_type: Mapped[str | None] = mapped_column(String, nullable=True)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
+class VehicleInfo(Base):
+    """Ficha de la unidad (reporte SOLOMON 'Listado de Unidades' / trplacas):
+    marca, tipo, estado operativo, KM actual y vencimientos de documentos."""
+    __tablename__ = "vehicle_info"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    plate: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    marca: Mapped[str | None] = mapped_column(String, nullable=True)
+    modelo: Mapped[str | None] = mapped_column(String, nullable=True)
+    tipo: Mapped[str | None] = mapped_column(String, nullable=True)          # TRACTO / CARRETA
+    ejes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ruedas: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    activo: Mapped[bool | None] = mapped_column(Boolean, nullable=True)      # Estado = Operativa
+    estado: Mapped[str | None] = mapped_column(String, nullable=True)        # texto original
+    condicion: Mapped[str | None] = mapped_column(String, nullable=True)
+    tipo_carga: Mapped[str | None] = mapped_column(String, nullable=True)
+    tipo_servicio: Mapped[str | None] = mapped_column(String, nullable=True)
+    km_actual: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fv_soat: Mapped[str | None] = mapped_column(String, nullable=True)       # dd/mm/yyyy
+    fv_citv: Mapped[str | None] = mapped_column(String, nullable=True)
+    fv_segveh: Mapped[str | None] = mapped_column(String, nullable=True)
+    fv_chv: Mapped[str | None] = mapped_column(String, nullable=True)
+    data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
+class VehicleKm(Base):
+    """Kilometraje recorrido por unidad y mes (reporte SOLOMON 'Resumen de
+    Kilometrajes' / trrepresumenkm). Un registro por placa+año+mes."""
+    __tablename__ = "vehicle_km"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    plate: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    year: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    month: Mapped[int] = mapped_column(Integer, nullable=False)              # 1..12
+    km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
+class CarretaLink(Base):
+    """Historial de cambios de carreta por tracto (reporte SOLOMON
+    'Placas Nro Cambio de Carretas' / vtrplacasnrocarretas_detalle)."""
+    __tablename__ = "carreta_link"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    tracto: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    carreta: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    fecha: Mapped[str | None] = mapped_column(String, nullable=True)         # dd/mm/yyyy
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)

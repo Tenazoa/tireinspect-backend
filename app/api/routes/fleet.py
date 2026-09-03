@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink
 
 
 def _audit(db, inspector, action, target, detail):
@@ -1553,6 +1553,329 @@ async def sync_full(
     return {"ok": True, "detalle": det_count, "flota": specs_created,
             "inventario": len(stock), "vehiculosNuevos": vehicles_created,
             "kmDesdeConsumo": bool(km_total_map)}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Reportes extra de SOLOMON (Crystal): Unidades, Km mensual, Carretas.
+#  Formato sucio: cabecera repetida por fila y números con coma de miles
+#  partidos en varios campos. Helpers para parsear con robustez.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _read_grouped(d, j):
+    """Lee un número que pudo partirse por comas de miles (hasta millones).
+    Devuelve (valor|None, siguiente_indice)."""
+    parts = []
+    k = j
+    while k < len(d):
+        f = d[k]
+        if re.fullmatch(r"\d{1,3}", f):
+            parts.append(f); k += 1; continue
+        if re.fullmatch(r"\d{1,3}\.\d+", f):
+            parts.append(f); k += 1; break
+        break
+    if not parts:
+        return None, j + 1
+    intpart = "".join(p.split(".")[0] for p in parts)
+    dec = parts[-1].split(".")[1] if "." in parts[-1] else "0"
+    try:
+        return float(intpart + "." + dec), k
+    except Exception:
+        return None, k
+
+
+def _date_or_none(s):
+    s = (s or "").strip()
+    return s if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", s) else None
+
+
+def _hdr_idx(row, label):
+    for i, v in enumerate(row):
+        if label in v:
+            return i
+    return None
+
+
+def _crystal_rows(raw):
+    import csv as _csv
+    text = raw.decode("latin-1", errors="replace")
+    return list(_csv.reader(io.StringIO(text)))
+
+
+@router.post("/upload-unidades")
+async def upload_unidades(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Reporte SOLOMON 'Listado de Unidades' (trplacas): marca, tipo, estado
+    operativo, KM actual y vencimientos. Actualiza la ficha y el vehículo."""
+    cid = inspector.company_id
+    rows = _crystal_rows(await file.read())
+    db.query(VehicleInfo).filter(VehicleInfo.company_id == cid).delete()
+    count = upd = 0
+    for r in rows:
+        d = [v.strip() for v in r]
+        idx = _hdr_idx(d, "Cliente Asignado")
+        if idx is None:
+            continue
+        d = d[idx + 1:]
+        if len(d) < 10:
+            continue
+        placa = d[2].upper().replace(" ", "")
+        if not placa:
+            continue
+        marca = d[3] or None
+        E = next((i for i, v in enumerate(d) if v in ("Operativa", "NO Operativa")), None)
+        if E is None:
+            continue
+        tu = d[E - 2] or None
+        tcarga = d[E - 1] or None
+        estado = d[E]
+        activo = (estado == "Operativa")
+        cond = (d[E + 1] if E + 1 < len(d) else "") or None
+        km, j = _read_grouped(d, E + 2)
+        soat = _date_or_none(d[j]) if j < len(d) else None
+        chv = _date_or_none(d[j + 1]) if j + 1 < len(d) else None
+        citv = _date_or_none(d[j + 2]) if j + 2 < len(d) else None
+        segveh = _date_or_none(d[j + 3]) if j + 3 < len(d) else None
+        ejes = None
+        try:
+            ejes = int(d[7]) if len(d) > 7 and d[7].isdigit() else None
+        except Exception:
+            ejes = None
+        db.add(VehicleInfo(
+            company_id=cid, plate=placa, marca=marca, tipo=tu, ejes=ejes,
+            activo=activo, estado=estado or None, condicion=cond, tipo_carga=tcarga,
+            km_actual=km, fv_soat=soat, fv_chv=chv, fv_citv=citv, fv_segveh=segveh,
+        ))
+        count += 1
+        veh = db.query(Vehicle).filter(Vehicle.plate == placa).first()
+        if veh:
+            if marca:
+                veh.brand = marca
+            if tu == "TRACTO":
+                veh.type = "truck"
+            elif tu == "CARRETA":
+                veh.type = "trailer"
+            veh.active = bool(activo)
+            upd += 1
+    db.commit()
+    from .inspections import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+    _audit(db, inspector, "cargar-unidades", file.filename or "archivo",
+           f"{count} unidades · {upd} vehículos actualizados")
+    return {"ok": True, "count": count, "vehiculosActualizados": upd}
+
+
+@router.post("/upload-km")
+async def upload_km(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Reporte SOLOMON 'Resumen de Kilometrajes' (trrepresumenkm): km por
+    unidad y mes. Reemplaza los datos de km mensual."""
+    cid = inspector.company_id
+    rows = _crystal_rows(await file.read())
+    db.query(VehicleKm).filter(VehicleKm.company_id == cid).delete()
+    count = 0
+    for r in rows:
+        d = [v.strip() for v in r]
+        idx = _hdr_idx(d, "Tipo")
+        if idx is None:
+            continue
+        d = d[idx + 1:]
+        if len(d) < 5:
+            continue
+        year = d[0]
+        placa = d[2].upper().replace(" ", "")
+        if not re.fullmatch(r"\d{4}", year) or not placa:
+            continue
+        nums = []
+        j = 3
+        while j < len(d) and len(nums) < 14:
+            v, j = _read_grouped(d, j)
+            if v is None:
+                break
+            nums.append(v)
+        if len(nums) < 12:
+            continue
+        for m in range(12):
+            km = nums[m]
+            if km and km > 0:
+                db.add(VehicleKm(company_id=cid, plate=placa, year=int(year),
+                                 month=m + 1, km=km))
+                count += 1
+    db.commit()
+    _audit(db, inspector, "cargar-km", file.filename or "archivo", f"{count} registros km")
+    return {"ok": True, "count": count}
+
+
+@router.post("/upload-carretas")
+async def upload_carretas(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Reporte SOLOMON 'Cambio de Carretas por Placa' (vtrplacasnrocarretas):
+    historial de qué tracto jaló qué carreta y cuándo."""
+    cid = inspector.company_id
+    rows = _crystal_rows(await file.read())
+    db.query(CarretaLink).filter(CarretaLink.company_id == cid).delete()
+    count = 0
+    for r in rows:
+        d = [v.strip() for v in r]
+        idx = _hdr_idx(d, "FECHA")
+        if idx is None:
+            continue
+        d = d[idx + 1:]
+        if len(d) < 3:
+            continue
+        tracto = d[0].upper().replace(" ", "")
+        carreta = d[1].upper().replace(" ", "")
+        if not tracto:
+            continue
+        db.add(CarretaLink(company_id=cid, tracto=tracto or None,
+                           carreta=carreta or None, fecha=_date_or_none(d[2])))
+        count += 1
+    db.commit()
+    _audit(db, inspector, "cargar-carretas", file.filename or "archivo", f"{count} cambios")
+    return {"ok": True, "count": count}
+
+
+def _parse_ddmmyyyy(s):
+    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", (s or "").strip())
+    if not m:
+        return None
+    import datetime as _dt
+    try:
+        return _dt.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except Exception:
+        return None
+
+
+@router.get("/unidades-info")
+def get_unidades_info(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Fichas de unidades (marca, tipo, estado, km, documentos)."""
+    cid = inspector.company_id
+    rows = db.query(VehicleInfo).filter(VehicleInfo.company_id == cid).all()
+    from collections import Counter
+    by_tipo = Counter((v.tipo or "—") for v in rows)
+    items = [{
+        "plate": v.plate, "marca": v.marca, "tipo": v.tipo, "ejes": v.ejes,
+        "activo": v.activo, "estado": v.estado, "condicion": v.condicion,
+        "tipoCarga": v.tipo_carga, "kmActual": v.km_actual,
+        "fvSoat": v.fv_soat, "fvChv": v.fv_chv, "fvCitv": v.fv_citv, "fvSegveh": v.fv_segveh,
+    } for v in rows]
+    items.sort(key=lambda x: x["plate"] or "")
+    return {
+        "total": len(rows),
+        "operativas": sum(1 for v in rows if v.activo),
+        "byTipo": sorted([{"label": k, "count": c} for k, c in by_tipo.items()], key=lambda x: -x["count"]),
+        "items": items,
+    }
+
+
+@router.get("/alertas")
+def get_alertas(
+    dias: int = 60,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Documentos por vencer o vencidos (SOAT, CITV, Seguro, CHV) en <dias>."""
+    import datetime as _dt
+    cid = inspector.company_id
+    hoy = _dt.date.today()
+    rows = db.query(VehicleInfo).filter(VehicleInfo.company_id == cid).all()
+    DOCS = [("SOAT", "fv_soat"), ("Rev. Técnica (CITV)", "fv_citv"),
+            ("Seguro Vehicular", "fv_segveh"), ("CHV", "fv_chv")]
+    alerts = []
+    for v in rows:
+        for label, attr in DOCS:
+            f = _parse_ddmmyyyy(getattr(v, attr))
+            if not f:
+                continue
+            dd = (f - hoy).days
+            if dd <= dias:
+                alerts.append({
+                    "plate": v.plate, "tipo": v.tipo, "activo": v.activo,
+                    "documento": label, "vence": getattr(v, attr), "dias": dd,
+                    "estado": "vencido" if dd < 0 else ("critico" if dd <= 15 else "proximo"),
+                })
+    alerts.sort(key=lambda x: x["dias"])
+    return {
+        "total": len(alerts),
+        "vencidos": sum(1 for a in alerts if a["dias"] < 0),
+        "criticos": sum(1 for a in alerts if 0 <= a["dias"] <= 15),
+        "items": alerts,
+    }
+
+
+@router.get("/km-mensual")
+def get_km_mensual(
+    plate: str = "",
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Km recorrido por mes. Sin placa: total de la flota por año/mes.
+    Con placa: solo esa unidad."""
+    cid = inspector.company_id
+    q = db.query(VehicleKm).filter(VehicleKm.company_id == cid)
+    if plate:
+        q = q.filter(VehicleKm.plate == plate.upper().replace(" ", ""))
+    rows = q.all()
+    from collections import defaultdict
+    agg = defaultdict(float)      # (year,month) -> km
+    years = set()
+    for r in rows:
+        agg[(r.year, r.month)] += (r.km or 0)
+        years.add(r.year)
+    MES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+    serie = [{"year": y, "month": m, "mes": MES[m - 1], "label": f"{MES[m-1]} {y}",
+              "km": round(agg[(y, m)], 0)} for y in sorted(years) for m in range(1, 13)
+             if (y, m) in agg]
+    top = defaultdict(float)
+    for r in rows:
+        top[r.plate] += (r.km or 0)
+    top_units = sorted([{"plate": p, "km": round(k, 0)} for p, k in top.items()],
+                       key=lambda x: -x["km"])[:20]
+    return {
+        "years": sorted(years),
+        "totalKm": round(sum(agg.values()), 0),
+        "serie": serie,
+        "topUnidades": top_units,
+    }
+
+
+@router.get("/carretas")
+def get_carretas(
+    tracto: str = "",
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Historial de cambios de carreta por tracto."""
+    cid = inspector.company_id
+    q = db.query(CarretaLink).filter(CarretaLink.company_id == cid)
+    if tracto:
+        q = q.filter(CarretaLink.tracto == tracto.upper().replace(" ", ""))
+    rows = q.all()
+
+    def _key(r):
+        dt = _parse_ddmmyyyy(r.fecha)
+        return dt or __import__("datetime").date.min
+
+    rows.sort(key=_key, reverse=True)
+    items = [{"tracto": r.tracto, "carreta": r.carreta, "fecha": r.fecha} for r in rows[:2000]]
+    from collections import Counter
+    by_tracto = Counter(r.tracto for r in rows if r.tracto)
+    return {
+        "total": len(rows),
+        "cambios": items,
+        "topTractos": [{"tracto": t, "cambios": c} for t, c in by_tracto.most_common(20)],
+    }
 
 
 @router.get("/detalle")
