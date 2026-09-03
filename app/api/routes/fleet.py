@@ -1516,7 +1516,10 @@ async def sync_full(
     stock: list[dict] = [srec for code, (_dk, srec) in stock_cand.items()
                          if code not in montada_codes] + stock_nocode
 
-    # ── 2) Flota (reemplaza specs por placa; crea vehículo si falta) ──
+    # ── 2) Flota: rebuild COMPLETO. Se borran TODAS las specs de la empresa
+    # primero (no solo por placa) para no dejar montadas viejas de placas que
+    # ya no tienen llantas montadas (dato stale de cargas anteriores). ──
+    db.query(TireSpec).filter(TireSpec.company_id == cid).delete()
     vehicles_created = specs_created = 0
     for plate, v in fleet.items():
         positions = list(v["tires"].keys())
@@ -1528,7 +1531,6 @@ async def sync_full(
             vehicles_created += 1
         else:
             vehicle.tire_positions = positions
-        db.query(TireSpec).filter(TireSpec.plate == plate).delete()
         for pos, t in v["tires"].items():
             db.add(TireSpec(
                 id=str(uuid.uuid4()), plate=plate, position=pos,
