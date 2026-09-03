@@ -1550,7 +1550,7 @@ async def sync_full(
            f"{specs_created} en flota · {len(stock)} en inventario · km={'Consumo' if km_total_map else 'no'}")
     return {"ok": True, "detalle": det_count, "flota": specs_created,
             "inventario": len(stock), "vehiculosNuevos": vehicles_created,
-            "kmDesdeConsumo": bool(km_total_map)}
+            "kmDesdeConsumo": bool(km_total_map), "dedup": True}
 
 
 @router.get("/detalle")
