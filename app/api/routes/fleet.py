@@ -1204,6 +1204,27 @@ def _det_brand(modelo, marca):
     return m or "VARIOS"
 
 
+# Overrides por CÓDIGO DE ALMACÉN (InvtID): corrigen marca/modelo mal cargados
+# en SOLOMON. Confirmado por TYMSAC. La comparación es tolerante (mayúsculas,
+# sin separadores, y la letra O ≡ 0 porque el sistema las mezcla).
+_DET_CODE_OVERRIDE = {
+    "00000001": ("BLACKLION", "BA122"),   # 000-00001 → BLACKLION BA122 (no RELINO/RZ)
+}
+
+
+def _det_code_key(code):
+    return "".join(ch for ch in str(code or "").upper() if ch.isalnum()).replace("O", "0")
+
+
+def _det_override(*codes):
+    """Devuelve (marca, modelo) si algún código de almacén tiene override, si no None."""
+    for c in codes:
+        k = _det_code_key(c)
+        if k and k in _DET_CODE_OVERRIDE:
+            return _DET_CODE_OVERRIDE[k]
+    return None
+
+
 def _det_medida(raw):
     import re as _re
     if not raw or not str(raw).strip():
@@ -1260,6 +1281,7 @@ async def upload_detalle(
     C_COD = col("nroLlanta", "N. de llanta", "Codigo")
     C_MOD = col("Modelo"); C_MAR = col("Marca"); C_MED = col("Medida")
     C_PLA = col("Placa"); C_EST = col("TipoEstado", "Estado"); C_TU = col("TipoUnidad")
+    C_INV = col("InvtID"); C_INVO = col("InvtIDOriginal")
     if not C_COD:
         raise HTTPException(400, f"No encontré la columna de código (nroLlanta). Columnas: {list(df.columns)[:15]}")
 
@@ -1270,6 +1292,10 @@ async def upload_detalle(
         row = {k: ("" if v is None else str(v).strip()) for k, v in r.items()}
         marca = _det_brand(row.get(C_MOD, ""), row.get(C_MAR, ""))
         medida = _det_medida(row.get(C_MED, ""))
+        ov = _det_override(row.get(C_INV, "") if C_INV else "", row.get(C_INVO, "") if C_INVO else "")
+        if ov:
+            marca = ov[0]
+            if C_MOD: row[C_MOD] = ov[1]
         if C_MAR: row[C_MAR] = marca
         if C_MED: row[C_MED] = medida
         db.add(TireDetalle(
@@ -1380,6 +1406,7 @@ async def sync_full(
     C_VIDA = col("nCicloVida", "Vida", "CicloVida")
     C_COC = col("CocadaActual", "Cocada")
     C_KMIN = col("KmMinimo")
+    C_INV = col("InvtID"); C_INVO = col("InvtIDOriginal")
     if not C_COD:
         raise HTTPException(400, f"No encontré la columna de código (nroLlanta). Columnas: {list(df.columns)[:15]}")
 
@@ -1406,6 +1433,11 @@ async def sync_full(
         codigo = row.get(C_COD) or ""
         marca = _det_brand(row.get(C_MOD, ""), row.get(C_MAR, ""))
         medida = _det_medida(row.get(C_MED, ""))
+        modelo = row.get(C_MOD, "") if C_MOD else ""
+        ov = _det_override(row.get(C_INV, "") if C_INV else "", row.get(C_INVO, "") if C_INVO else "")
+        if ov:
+            marca, modelo = ov
+            if C_MOD: row[C_MOD] = modelo
         if C_MAR: row[C_MAR] = marca
         if C_MED: row[C_MED] = medida
         db.add(TireDetalle(
@@ -1420,7 +1452,6 @@ async def sync_full(
         ubic = (row.get(C_EST) if C_EST else "") or "Sin ubicación"
         vida = (row.get(C_VIDA) if C_VIDA else "") or ""
         cocada = fnum(row.get(C_COC)) if C_COC else None
-        modelo = row.get(C_MOD, "") if C_MOD else ""
         plate = (row.get(C_PLA, "") if C_PLA else "").upper().replace(" ", "").replace("-", "")
         pos = (row.get(C_POS) if C_POS else "") or ""
         tipo = (row.get(C_TU) if C_TU else "") or ""
