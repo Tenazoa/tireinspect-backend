@@ -1511,6 +1511,8 @@ async def sync_full(
     for rec in fleet_cand.values():
         fleet.setdefault(rec["plate"], {"type": rec["type"], "tires": {}})["tires"][rec["position"]] = rec
     montada_codes = {rec["code"] for rec in fleet_cand.values() if rec.get("code")}
+    _stock_cand_len = len(stock_cand)
+    _excluded = sum(1 for code in stock_cand if code in montada_codes)
     stock: list[dict] = [srec for code, (_dk, srec) in stock_cand.items()
                          if code not in montada_codes] + stock_nocode
 
@@ -1550,7 +1552,10 @@ async def sync_full(
            f"{specs_created} en flota · {len(stock)} en inventario · km={'Consumo' if km_total_map else 'no'}")
     return {"ok": True, "detalle": det_count, "flota": specs_created,
             "inventario": len(stock), "vehiculosNuevos": vehicles_created,
-            "kmDesdeConsumo": bool(km_total_map), "dedup": True}
+            "kmDesdeConsumo": bool(km_total_map), "dedup": True,
+            "_diag": {"stockCand": _stock_cand_len, "nocode": len(stock_nocode),
+                      "montadaCodes": len(montada_codes), "excluidos": _excluded,
+                      "fleetCand": len(fleet_cand)}}
 
 
 @router.get("/detalle")
