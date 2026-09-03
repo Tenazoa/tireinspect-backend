@@ -1299,12 +1299,35 @@ def get_detalle(
                  or q in (r.brand or "").upper() or q in (r.plate or "").upper()]
     columns = list(rows[0].data.keys()) if rows and rows[0].data else []
     top = lambda c: [{"label": k, "count": v} for k, v in c.most_common(50)]
+    last = (db.query(AuditLog)
+            .filter(AuditLog.company_id == inspector.company_id,
+                    AuditLog.action == "cargar-detalle")
+            .order_by(AuditLog.created_at.desc()).first())
     return {
         "total": len(rows), "filteredCount": len(items), "columns": columns,
         "byEstado": sorted([{"label": k, "count": v} for k, v in by_estado.items()], key=lambda x: -x["count"]),
         "byMarca": top(by_marca), "byUnidad": top(by_unidad),
         "items": [r.data for r in items[:3000]],
+        "lastSync": last.created_at.isoformat() if last and last.created_at else None,
     }
+
+
+@router.get("/last-sync")
+def last_sync(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Fecha/hora de la última actualización automática de datos (para mostrar en toda la web)."""
+    def _last(action):
+        r = (db.query(AuditLog)
+             .filter(AuditLog.company_id == inspector.company_id, AuditLog.action == action)
+             .order_by(AuditLog.created_at.desc()).first())
+        return r.created_at.isoformat() if r and r.created_at else None
+    det = _last("cargar-detalle")
+    sol = _last("cargar-solomon")
+    # La más reciente de las dos = última actualización global
+    latest = max([x for x in (det, sol) if x], default=None)
+    return {"detalle": det, "solomon": sol, "lastSync": latest}
 
 
 @router.get("/duplicate-codes")
