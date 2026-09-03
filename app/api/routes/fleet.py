@@ -1782,14 +1782,18 @@ def get_unidades_info(
 @router.get("/alertas")
 def get_alertas(
     dias: int = 60,
+    soloActivas: bool = True,
     db: Session = Depends(get_db),
     inspector: Inspector = Depends(get_current_inspector),
 ):
-    """Documentos por vencer o vencidos (SOAT, CITV, Seguro, CHV) en <dias>."""
+    """Documentos por vencer o vencidos (SOAT, CITV, Seguro, CHV) en <dias>.
+    Por defecto solo unidades operativas (soloActivas)."""
     import datetime as _dt
     cid = inspector.company_id
     hoy = _dt.date.today()
     rows = db.query(VehicleInfo).filter(VehicleInfo.company_id == cid).all()
+    if soloActivas:
+        rows = [v for v in rows if v.activo]
     DOCS = [("SOAT", "fv_soat"), ("Rev. Técnica (CITV)", "fv_citv"),
             ("Seguro Vehicular", "fv_segveh"), ("CHV", "fv_chv")]
     alerts = []
