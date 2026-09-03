@@ -1294,7 +1294,7 @@ def _km_map_from_consumo(raw: bytes):
             if c.lower() in cols:
                 return cols[c.lower()]
         return None
-    K_COD, K_KM, K_VIDA = col("NroLlanta"), col("KM"), col("CicloVida")
+    K_COD, K_KM, K_VIDA, K_PLA = col("NroLlanta"), col("KM"), col("CicloVida"), col("Placa")
     if not K_COD or not K_KM:
         return {}, {}
     def fnum(v):
@@ -1303,23 +1303,36 @@ def _km_map_from_consumo(raw: bytes):
             return x if x > 0 else None
         except Exception:
             return None
-    by_tire = defaultdict(list)          # code -> [(km, vida)]
+    by_tire = defaultdict(list)          # code -> [(km, vida, placa)]
     for _, r in cf.iterrows():
         code = str(r.get(K_COD) or "").strip()
         km = fnum(r.get(K_KM))
         if code and km is not None:
-            by_tire[code].append((km, str(r.get(K_VIDA) or "").strip() if K_VIDA else ""))
+            by_tire[code].append((km, str(r.get(K_VIDA) or "").strip() if K_VIDA else "",
+                                  str(r.get(K_PLA) or "").strip() if K_PLA else ""))
+
+    def _span_by_plate(rows):
+        """Suma (odómetro máx - mín) por placa. Evita contar el salto de
+        odómetro cuando la llanta pasa de un camión a otro."""
+        groups = defaultdict(list)
+        for km, _v, pla in rows:
+            groups[pla].append(km)
+        total = 0.0
+        for kms in groups.values():
+            if len(kms) >= 2:
+                total += max(kms) - min(kms)
+        return round(total, 0)
+
     km_total, km_life = {}, {}
     for code, vals in by_tire.items():
-        kms = [k for k, _ in vals]
-        if not kms:
+        if not vals:
             continue
-        km_total[code] = round(max(kms) - min(kms), 0)   # recorrido total (proxy)
+        km_total[code] = _span_by_plate(vals)            # recorrido total (proxy por placa)
         if K_VIDA:
             last_vida = vals[-1][1]
-            lk = [k for k, v in vals if v == last_vida]
-            if len(lk) >= 2:
-                km_life[code] = round(max(lk) - min(lk), 0)
+            lk = [t for t in vals if t[1] == last_vida]
+            if lk:
+                km_life[code] = _span_by_plate(lk)
     return km_total, km_life
 
 
