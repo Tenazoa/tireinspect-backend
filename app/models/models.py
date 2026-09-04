@@ -255,3 +255,22 @@ class CarretaLink(Base):
     carreta: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     fecha: Mapped[str | None] = mapped_column(String, nullable=True)         # dd/mm/yyyy
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
+class VehicleGastos(Base):
+    """Ingreso y costos por unidad y año (SOLOMON TRPlacasIngresoGastos):
+    costo real de llantas, taller, repuestos, etc. Un registro por placa+año."""
+    __tablename__ = "vehicle_gastos"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    plate: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    anio: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    tipo_unidad: Mapped[str | None] = mapped_column(String, nullable=True)
+    ingreso: Mapped[float | None] = mapped_column(Float, nullable=True)
+    produccion: Mapped[float | None] = mapped_column(Float, nullable=True)
+    costo_llantas: Mapped[float | None] = mapped_column(Float, nullable=True)   # Llantas+Llantacentro+SuministrosLlantas
+    lubricantes: Mapped[float | None] = mapped_column(Float, nullable=True)
+    repuestos: Mapped[float | None] = mapped_column(Float, nullable=True)
+    taller: Mapped[float | None] = mapped_column(Float, nullable=True)
+    otros: Mapped[float | None] = mapped_column(Float, nullable=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)

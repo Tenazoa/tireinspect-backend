@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos
 
 
 def _audit(db, inspector, action, target, detail):
@@ -1879,6 +1879,172 @@ def get_carretas(
         "total": len(rows),
         "cambios": items,
         "topTractos": [{"tracto": t, "cambios": c} for t, c in by_tracto.most_common(20)],
+    }
+
+
+def _clean_rows(raw, filename):
+    """Lee un CSV/Excel limpio (columnas normales) a lista de dicts."""
+    import pandas as pd
+    name = (filename or "").lower()
+    if name.endswith(".csv"):
+        df = pd.read_csv(io.BytesIO(raw), dtype=str, encoding="utf-8-sig", keep_default_na=False)
+    else:
+        eng = "xlrd" if name.endswith(".xls") else "openpyxl"
+        df = pd.read_excel(io.BytesIO(raw), dtype=str, engine=eng, keep_default_na=False)
+    df.columns = [str(c).strip().lstrip("﻿") for c in df.columns]
+    return df
+
+
+def _fnum(v):
+    try:
+        return float(str(v).replace(",", "").strip())
+    except Exception:
+        return None
+
+
+@router.post("/upload-km-exacto")
+async def upload_km_exacto(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Km EXACTO por placa y mes (SOLOMON LL_TblKMPlaca, export KM_Placa_Mes).
+    Reemplaza los datos de km mensual (mejor y más actual que el proxy)."""
+    cid = inspector.company_id
+    df = _clean_rows(await file.read(), file.filename)
+    cols = {c.lower(): c for c in df.columns}
+
+    def col(*cs):
+        for c in cs:
+            if c.lower() in cols:
+                return cols[c.lower()]
+        return None
+
+    C_PLA, C_AN, C_MES, C_KM = col("Placa"), col("Anio", "Año", "Year"), col("Mes", "Month"), col("Km", "KM")
+    if not (C_PLA and C_AN and C_MES and C_KM):
+        raise HTTPException(400, f"Faltan columnas Placa/Anio/Mes/Km. Detectadas: {list(df.columns)[:10]}")
+    db.query(VehicleKm).filter(VehicleKm.company_id == cid).delete()
+    count = 0
+    for _, r in df.iterrows():
+        placa = str(r[C_PLA]).upper().replace(" ", "")
+        km = _fnum(r[C_KM])
+        try:
+            an = int(float(r[C_AN])); mes = int(float(r[C_MES]))
+        except Exception:
+            continue
+        if placa and km and km > 0 and 1 <= mes <= 12:
+            db.add(VehicleKm(company_id=cid, plate=placa, year=an, month=mes, km=km))
+            count += 1
+    db.commit()
+    _audit(db, inspector, "cargar-km", file.filename or "archivo", f"{count} registros km (exacto)")
+    return {"ok": True, "count": count}
+
+
+@router.post("/upload-gastos")
+async def upload_gastos(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Ingreso y costos por placa y año (SOLOMON TRPlacasIngresoGastos).
+    costo_llantas = Llantas + Llantacentro + SuministrosLlantas."""
+    cid = inspector.company_id
+    df = _clean_rows(await file.read(), file.filename)
+    cols = {c.lower(): c for c in df.columns}
+
+    def col(*cs):
+        for c in cs:
+            if c.lower() in cols:
+                return cols[c.lower()]
+        return None
+
+    C_PLA, C_AN, C_TU = col("Placa"), col("Anio", "Año"), col("TipoUnidad")
+    if not (C_PLA and C_AN):
+        raise HTTPException(400, f"Faltan columnas Placa/Anio. Detectadas: {list(df.columns)[:12]}")
+    g = lambda r, name: _fnum(r[cols[name.lower()]]) if name.lower() in cols else None
+    db.query(VehicleGastos).filter(VehicleGastos.company_id == cid).delete()
+    count = 0
+    for _, r in df.iterrows():
+        placa = str(r[C_PLA]).upper().replace(" ", "")
+        try:
+            an = int(float(r[C_AN]))
+        except Exception:
+            continue
+        if not placa or an < 2000:
+            continue
+        cll = (g(r, "Llantas") or 0) + (g(r, "Llantacentro") or 0) + (g(r, "SuministrosLlantas") or 0)
+        rep = (g(r, "Repuestos") or 0) + (g(r, "SuministrosRepuestos") or 0)
+        db.add(VehicleGastos(
+            company_id=cid, plate=placa, anio=an,
+            tipo_unidad=(str(r[C_TU]).strip() if C_TU else None) or None,
+            ingreso=g(r, "Ingreso"), produccion=g(r, "Produccion"),
+            costo_llantas=round(cll, 2), lubricantes=g(r, "Lubricantes"),
+            repuestos=round(rep, 2), taller=g(r, "Taller"), otros=g(r, "Otros"),
+        ))
+        count += 1
+    db.commit()
+    _audit(db, inspector, "cargar-gastos", file.filename or "archivo", f"{count} registros gastos")
+    return {"ok": True, "count": count}
+
+
+@router.get("/rentabilidad")
+def get_rentabilidad(
+    anio: int = 0,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Costo real de llantas y km por unidad → CPK exacto (soles/km).
+    anio=0 => todos los años; si se da, filtra a ese año."""
+    from collections import defaultdict
+    cid = inspector.company_id
+    gq = db.query(VehicleGastos).filter(VehicleGastos.company_id == cid)
+    kq = db.query(VehicleKm).filter(VehicleKm.company_id == cid)
+    if anio:
+        gq = gq.filter(VehicleGastos.anio == anio)
+        kq = kq.filter(VehicleKm.year == anio)
+    gastos = gq.all()
+    kms = kq.all()
+
+    km_by = defaultdict(float)
+    for k in kms:
+        km_by[k.plate] += (k.km or 0)
+    g_by = defaultdict(lambda: {"costoLlantas": 0.0, "taller": 0.0, "repuestos": 0.0,
+                                "lubricantes": 0.0, "otros": 0.0, "ingreso": 0.0,
+                                "produccion": 0.0, "tipo": None})
+    for g in gastos:
+        b = g_by[g.plate]
+        b["costoLlantas"] += (g.costo_llantas or 0)
+        b["taller"] += (g.taller or 0)
+        b["repuestos"] += (g.repuestos or 0)
+        b["lubricantes"] += (g.lubricantes or 0)
+        b["otros"] += (g.otros or 0)
+        b["ingreso"] += (g.ingreso or 0)
+        b["produccion"] += (g.produccion or 0)
+        b["tipo"] = b["tipo"] or g.tipo_unidad
+
+    plates = set(km_by) | set(g_by)
+    items = []
+    for p in plates:
+        km = km_by.get(p, 0)
+        b = g_by.get(p, {})
+        cll = b.get("costoLlantas", 0)
+        items.append({
+            "plate": p, "tipo": b.get("tipo"), "km": round(km, 0),
+            "costoLlantas": round(cll, 2), "taller": round(b.get("taller", 0), 2),
+            "repuestos": round(b.get("repuestos", 0), 2),
+            "ingreso": round(b.get("ingreso", 0), 2),
+            "cpkLlantas": round(cll / km, 4) if km > 0 else None,
+        })
+    items.sort(key=lambda x: -(x["costoLlantas"] or 0))
+    anios = sorted({g.anio for g in db.query(VehicleGastos).filter(VehicleGastos.company_id == cid).all()})
+    tot_cll = sum(i["costoLlantas"] for i in items)
+    tot_km = sum(i["km"] for i in items)
+    return {
+        "anios": anios,
+        "totalCostoLlantas": round(tot_cll, 2),
+        "totalKm": round(tot_km, 0),
+        "cpkFlota": round(tot_cll / tot_km, 4) if tot_km > 0 else None,
+        "items": items,
     }
 
 
