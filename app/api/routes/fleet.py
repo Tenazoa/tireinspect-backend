@@ -2193,8 +2193,12 @@ def get_desgaste(
         if len(pts) >= 2:
             mm = pts[0][1] - pts[-1][1]
             km = km_by.get(c, 0)
-            if mm > 0 and km > 0:
-                rendimiento.append({"code": c, "kmMm": round(km / mm, 0), "km": round(km, 0), "cocadaActual": cn})
+            # Requiere desgaste real (>=3mm) para que km/mm sea confiable; sin
+            # esto, llantas con 1mm medido y mucho km dan valores irreales.
+            if mm >= 3 and km > 0:
+                kmmm = km / mm
+                if kmmm <= 20000:      # descarta outliers residuales
+                    rendimiento.append({"code": c, "kmMm": round(kmmm, 0), "km": round(km, 0), "cocadaActual": cn})
     porVencer.sort(key=lambda x: x["cocada"])
     rendimiento.sort(key=lambda x: -x["kmMm"])
     return {
