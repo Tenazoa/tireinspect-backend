@@ -2208,6 +2208,128 @@ def get_desgaste(
     }
 
 
+@router.get("/kpis")
+def get_kpis(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """KPIs ejecutivos reales para el Dashboard (desde los datos de SOLOMON)."""
+    import datetime as _dt
+    from collections import defaultdict
+    cid = inspector.company_id
+    hoy = _dt.date.today()
+
+    # km del año en curso
+    kms = db.query(VehicleKm).filter(VehicleKm.company_id == cid).all()
+    anio = max([k.year for k in kms], default=hoy.year)
+    km_anio = sum((k.km or 0) for k in kms if k.year == anio)
+    # costo llantas y CPK del año
+    gastos = db.query(VehicleGastos).filter(VehicleGastos.company_id == cid, VehicleGastos.anio == anio).all()
+    costo_llantas = sum((g.costo_llantas or 0) for g in gastos)
+    cpk = round(costo_llantas / km_anio, 4) if km_anio > 0 else None
+    # unidades operativas
+    infos = db.query(VehicleInfo).filter(VehicleInfo.company_id == cid).all()
+    operativas = sum(1 for v in infos if v.activo)
+    # alertas de docs (operativas, próximos 60 días o vencidos)
+    alert = 0
+    for v in infos:
+        if not v.activo:
+            continue
+        for val in (v.fv_soat, v.fv_citv, v.fv_segveh):
+            f = _parse_ddmmyyyy(val)
+            if f and (f - hoy).days <= 60:
+                alert += 1
+    # llantas por vencer (cocada baja): última medida <= 6mm
+    meds = db.query(TireMedida).filter(TireMedida.company_id == cid).all()
+    last_coc = {}
+    for m in meds:
+        d = _pdate(m.fecha)
+        if d and m.cocada is not None:
+            cur = last_coc.get(m.code)
+            if cur is None or d > cur[0]:
+                last_coc[m.code] = (d, m.cocada)
+    por_vencer = sum(1 for (_d, c) in last_coc.values() if c <= 6)
+    # llantas montadas
+    montadas = db.query(TireSpec).filter(TireSpec.company_id == cid).count()
+
+    return {
+        "anio": anio,
+        "kmAnio": round(km_anio, 0),
+        "costoLlantasAnio": round(costo_llantas, 2),
+        "cpkLlantas": cpk,
+        "unidadesOperativas": operativas,
+        "alertasDocs": alert,
+        "llantasPorVencer": por_vencer,
+        "llantasMontadas": montadas,
+    }
+
+
+@router.get("/unidad/{plate}")
+def get_unidad_360(
+    plate: str,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Ficha 360 de una unidad: datos, km exacto, costos/CPK, documentos,
+    carreta actual y sus llantas montadas con cocada."""
+    import datetime as _dt
+    cid = inspector.company_id
+    p = plate.upper().replace(" ", "").replace("-", "")
+
+    info = db.query(VehicleInfo).filter(VehicleInfo.company_id == cid, VehicleInfo.plate == p).first()
+    # km exacto: total y por año
+    kms = db.query(VehicleKm).filter(VehicleKm.company_id == cid, VehicleKm.plate == p).all()
+    km_total = sum((k.km or 0) for k in kms)
+    from collections import defaultdict
+    km_year = defaultdict(float)
+    for k in kms:
+        km_year[k.year] += (k.km or 0)
+    # costos por año
+    gastos = db.query(VehicleGastos).filter(VehicleGastos.company_id == cid, VehicleGastos.plate == p).all()
+    costo_llantas = sum((g.costo_llantas or 0) for g in gastos)
+    taller = sum((g.taller or 0) for g in gastos)
+    repuestos = sum((g.repuestos or 0) for g in gastos)
+    cpk = round(costo_llantas / km_total, 4) if km_total > 0 else None
+    # carreta actual (último registro con este tracto)
+    links = db.query(CarretaLink).filter(CarretaLink.company_id == cid, CarretaLink.tracto == p).all()
+    links.sort(key=lambda r: _parse_ddmmyyyy(r.fecha) or _dt.date.min, reverse=True)
+    carreta_actual = links[0].carreta if links else None
+    # documentos + alertas
+    hoy = _dt.date.today()
+    docs = []
+    if info:
+        for label, val in [("SOAT", info.fv_soat), ("Rev. Técnica (CITV)", info.fv_citv),
+                           ("Seguro Vehicular", info.fv_segveh), ("CHV", info.fv_chv)]:
+            f = _parse_ddmmyyyy(val)
+            if f:
+                dd = (f - hoy).days
+                docs.append({"documento": label, "vence": val, "dias": dd,
+                             "estado": "vencido" if dd < 0 else ("critico" if dd <= 15 else "ok")})
+    # llantas montadas
+    specs = db.query(TireSpec).filter(TireSpec.company_id == cid, TireSpec.plate == p).all()
+    llantas = sorted([{
+        "position": s.position, "code": s.code, "brand": s.brand, "model": s.model,
+        "size": s.size, "cocada": s.last_depth_mm, "vida": s.life, "kmTotal": s.km_total,
+    } for s in specs], key=lambda x: x["position"] or "")
+
+    return {
+        "plate": p,
+        "info": info and {
+            "marca": info.marca, "tipo": info.tipo, "estado": info.estado, "activo": info.activo,
+            "ejes": info.ejes, "condicion": info.condicion, "tipoCarga": info.tipo_carga,
+            "kmActualSolomon": info.km_actual,
+        },
+        "kmExactoTotal": round(km_total, 0),
+        "kmPorAnio": sorted([{"anio": y, "km": round(v, 0)} for y, v in km_year.items()], key=lambda x: -x["anio"])[:8],
+        "costoLlantas": round(costo_llantas, 2), "taller": round(taller, 2), "repuestos": round(repuestos, 2),
+        "cpkLlantas": cpk,
+        "carretaActual": carreta_actual,
+        "documentos": docs,
+        "llantas": llantas,
+        "numLlantas": len(llantas),
+    }
+
+
 @router.get("/detalle")
 def get_detalle(
     search: str = "",
