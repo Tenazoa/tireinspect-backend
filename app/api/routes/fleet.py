@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida
 
 
 def _audit(db, inspector, action, target, detail):
@@ -2045,6 +2045,165 @@ def get_rentabilidad(
         "totalKm": round(tot_km, 0),
         "cpkFlota": round(tot_cll / tot_km, 4) if tot_km > 0 else None,
         "items": items,
+    }
+
+
+@router.post("/upload-medidas")
+async def upload_medidas(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Cocada histórica por llanta (SOLOMON LLMedida) → curva de desgaste."""
+    cid = inspector.company_id
+    df = _clean_rows(await file.read(), file.filename)
+    cols = {c.lower(): c for c in df.columns}
+
+    def col(*cs):
+        for c in cs:
+            if c.lower() in cols:
+                return cols[c.lower()]
+        return None
+
+    C_COD, C_FE, C_CO = col("NroLlanta", "Codigo"), col("Fecha"), col("Cocada")
+    if not (C_COD and C_CO):
+        raise HTTPException(400, f"Faltan columnas NroLlanta/Cocada. Detectadas: {list(df.columns)[:10]}")
+    db.query(TireMedida).filter(TireMedida.company_id == cid).delete()
+    count = 0
+    for _, r in df.iterrows():
+        code = str(r[C_COD]).strip().upper()
+        coc = _fnum(r[C_CO])
+        if code and coc and coc > 0:
+            db.add(TireMedida(company_id=cid, code=code,
+                              fecha=(str(r[C_FE]).strip()[:10] if C_FE else None), cocada=coc))
+            count += 1
+    db.commit()
+    _audit(db, inspector, "cargar-medidas", file.filename or "archivo", f"{count} medidas")
+    return {"ok": True, "count": count}
+
+
+@router.post("/upload-kmvida")
+async def upload_kmvida(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Km por llanta y ciclo de vida (SOLOMON vLLantasKMVida) → rendimiento."""
+    cid = inspector.company_id
+    df = _clean_rows(await file.read(), file.filename)
+    cols = {c.lower(): c for c in df.columns}
+
+    def col(*cs):
+        for c in cs:
+            if c.lower() in cols:
+                return cols[c.lower()]
+        return None
+
+    C_COD, C_VI, C_KM = col("NroLlanta", "Codigo"), col("Vida"), col("KMVida", "Km")
+    if not (C_COD and C_KM):
+        raise HTTPException(400, f"Faltan columnas NroLlanta/KMVida. Detectadas: {list(df.columns)[:10]}")
+    db.query(TireKmVida).filter(TireKmVida.company_id == cid).delete()
+    count = 0
+    for _, r in df.iterrows():
+        code = str(r[C_COD]).strip().upper()
+        km = _fnum(r[C_KM])
+        if code and km is not None:
+            db.add(TireKmVida(company_id=cid, code=code,
+                              vida=_fnum(r[C_VI]) if C_VI else None, km_vida=km))
+            count += 1
+    db.commit()
+    _audit(db, inspector, "cargar-kmvida", file.filename or "archivo", f"{count} registros")
+    return {"ok": True, "count": count}
+
+
+def _pdate(s):
+    m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", (s or "").strip())
+    if not m:
+        return None
+    import datetime as _dt
+    try:
+        return _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except Exception:
+        return None
+
+
+@router.get("/desgaste")
+def get_desgaste(
+    code: str = "",
+    minCocada: float = 4.0,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Curva de desgaste y rendimiento por llanta. Con code: detalle + proyección
+    a cocada mínima. Sin code: resumen de flota (llantas por vencer, rendimiento)."""
+    import datetime as _dt
+    cid = inspector.company_id
+
+    if code:
+        code = code.strip().upper()
+        meds = db.query(TireMedida).filter(TireMedida.company_id == cid, TireMedida.code == code).all()
+        pts = sorted([(_pdate(m.fecha), m.cocada, m.fecha) for m in meds if m.cocada is not None],
+                     key=lambda x: x[0] or _dt.date.min)
+        curva = [{"fecha": f, "cocada": c} for (_d, c, f) in pts]
+        kmv = db.query(TireKmVida).filter(TireKmVida.company_id == cid, TireKmVida.code == code).all()
+        km_total = sum((k.km_vida or 0) for k in kmv)
+        vidas = [{"vida": k.vida, "km": k.km_vida} for k in sorted(kmv, key=lambda x: x.vida or 0)]
+        resp = {"code": code, "curva": curva, "kmTotal": round(km_total, 0), "vidas": vidas}
+        # proyección de desgaste
+        dated = [(d, c) for (d, c, _f) in pts if d]
+        if len(dated) >= 2:
+            (d0, c0), (dn, cn) = dated[0], dated[-1]
+            mm = (c0 - cn)
+            days = (dn - d0).days
+            resp["cocadaActual"] = cn
+            resp["cocadaInicial"] = c0
+            if mm > 0 and days > 0:
+                rate = mm / days                      # mm por día
+                resp["desgasteMmMes"] = round(rate * 30, 2)
+                if km_total > 0:
+                    resp["rendimientoKmMm"] = round(km_total / mm, 0)
+                rem = cn - minCocada
+                if rate > 0 and rem > 0:
+                    fproj = dn + _dt.timedelta(days=rem / rate)
+                    resp["fechaProyeccion"] = fproj.isoformat()
+                    resp["diasRestantes"] = int(rem / rate)
+                elif rem <= 0:
+                    resp["fechaProyeccion"] = "ya bajo mínimo"
+        return resp
+
+    # ── Resumen de flota ──
+    from collections import defaultdict
+    meds = db.query(TireMedida).filter(TireMedida.company_id == cid).all()
+    by = defaultdict(list)
+    for m in meds:
+        if m.cocada is not None:
+            by[m.code].append((_pdate(m.fecha), m.cocada))
+    km_by = defaultdict(float)
+    for k in db.query(TireKmVida).filter(TireKmVida.company_id == cid).all():
+        km_by[k.code] += (k.km_vida or 0)
+
+    porVencer, rendimiento = [], []
+    for c, pts in by.items():
+        pts = sorted([p for p in pts if p[0]], key=lambda x: x[0])
+        if not pts:
+            continue
+        cn = pts[-1][1]
+        if cn <= minCocada + 2:            # cerca o bajo el mínimo
+            porVencer.append({"code": c, "cocada": cn, "fecha": pts[-1][0].isoformat()})
+        if len(pts) >= 2:
+            mm = pts[0][1] - pts[-1][1]
+            km = km_by.get(c, 0)
+            if mm > 0 and km > 0:
+                rendimiento.append({"code": c, "kmMm": round(km / mm, 0), "km": round(km, 0), "cocadaActual": cn})
+    porVencer.sort(key=lambda x: x["cocada"])
+    rendimiento.sort(key=lambda x: -x["kmMm"])
+    return {
+        "totalLlantasConMedidas": len(by),
+        "minCocada": minCocada,
+        "porVencer": porVencer[:200],
+        "porVencerCount": len(porVencer),
+        "mejorRendimiento": rendimiento[:20],
+        "peorRendimiento": rendimiento[-20:][::-1] if len(rendimiento) > 20 else [],
     }
 
 

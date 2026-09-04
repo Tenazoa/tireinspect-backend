@@ -274,3 +274,25 @@ class VehicleGastos(Base):
     taller: Mapped[float | None] = mapped_column(Float, nullable=True)
     otros: Mapped[float | None] = mapped_column(Float, nullable=True)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
+class TireMedida(Base):
+    """Cocada medida por llanta en el tiempo (SOLOMON LLMedida) → curva de desgaste."""
+    __tablename__ = "tire_medida"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    code: Mapped[str] = mapped_column(String, nullable=False, index=True)   # NroLlanta
+    fecha: Mapped[str | None] = mapped_column(String, nullable=True)        # yyyy-mm-dd
+    cocada: Mapped[float | None] = mapped_column(Float, nullable=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
+class TireKmVida(Base):
+    """Km recorrido por llanta y ciclo de vida (SOLOMON vLLantasKMVida)."""
+    __tablename__ = "tire_kmvida"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    code: Mapped[str] = mapped_column(String, nullable=False, index=True)   # NroLlanta
+    vida: Mapped[float | None] = mapped_column(Float, nullable=True)        # ciclo
+    km_vida: Mapped[float | None] = mapped_column(Float, nullable=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
