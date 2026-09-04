@@ -2148,7 +2148,9 @@ def get_desgaste(
         kmv = db.query(TireKmVida).filter(TireKmVida.company_id == cid, TireKmVida.code == code).all()
         km_total = sum((k.km_vida or 0) for k in kmv)
         vidas = [{"vida": k.vida, "km": k.km_vida} for k in sorted(kmv, key=lambda x: x.vida or 0)]
-        resp = {"code": code, "curva": curva, "kmTotal": round(km_total, 0), "vidas": vidas}
+        km_vals = [k.km_vida for k in kmv if (k.km_vida or 0) > 0]
+        resp = {"code": code, "curva": curva, "kmTotal": round(km_total, 0), "vidas": vidas,
+                "promedioKmVida": round(sum(km_vals) / len(km_vals), 0) if km_vals else None}
         # proyección de desgaste
         dated = [(d, c) for (d, c, _f) in pts if d]
         if len(dated) >= 2:
@@ -2160,8 +2162,6 @@ def get_desgaste(
             if mm > 0 and days > 0:
                 rate = mm / days                      # mm por día
                 resp["desgasteMmMes"] = round(rate * 30, 2)
-                if km_total > 0:
-                    resp["rendimientoKmMm"] = round(km_total / mm, 0)
                 rem = cn - minCocada
                 if rate > 0 and rem > 0:
                     fproj = dn + _dt.timedelta(days=rem / rate)
@@ -2182,7 +2182,7 @@ def get_desgaste(
     for k in db.query(TireKmVida).filter(TireKmVida.company_id == cid).all():
         km_by[k.code] += (k.km_vida or 0)
 
-    porVencer, rendimiento = [], []
+    porVencer = []
     for c, pts in by.items():
         pts = sorted([p for p in pts if p[0]], key=lambda x: x[0])
         if not pts:
@@ -2190,24 +2190,21 @@ def get_desgaste(
         cn = pts[-1][1]
         if cn <= minCocada + 2:            # cerca o bajo el mínimo
             porVencer.append({"code": c, "cocada": cn, "fecha": pts[-1][0].isoformat()})
-        if len(pts) >= 2:
-            mm = pts[0][1] - pts[-1][1]
-            km = km_by.get(c, 0)
-            # Requiere desgaste real (>=3mm) para que km/mm sea confiable; sin
-            # esto, llantas con 1mm medido y mucho km dan valores irreales.
-            if mm >= 3 and km > 0:
-                kmmm = km / mm
-                if kmmm <= 20000:      # descarta outliers residuales
-                    rendimiento.append({"code": c, "kmMm": round(kmmm, 0), "km": round(km, 0), "cocadaActual": cn})
     porVencer.sort(key=lambda x: x["cocada"])
-    rendimiento.sort(key=lambda x: -x["kmMm"])
+
+    # Rendimiento REAL: km por VIDA (de vLLantasKMVida, dato confiable).
+    kmvidas = db.query(TireKmVida).filter(TireKmVida.company_id == cid).all()
+    vals = [k.km_vida for k in kmvidas if (k.km_vida or 0) > 1000]
+    prom_km_vida = round(sum(vals) / len(vals), 0) if vals else 0
+    topKm = sorted([{"code": c, "km": round(k, 0)} for c, k in km_by.items() if k > 0],
+                   key=lambda x: -x["km"])[:20]
     return {
         "totalLlantasConMedidas": len(by),
         "minCocada": minCocada,
         "porVencer": porVencer[:200],
         "porVencerCount": len(porVencer),
-        "mejorRendimiento": rendimiento[:20],
-        "peorRendimiento": rendimiento[-20:][::-1] if len(rendimiento) > 20 else [],
+        "promedioKmVida": prom_km_vida,
+        "topKm": topKm,
     }
 
 
