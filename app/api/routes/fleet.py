@@ -2112,8 +2112,31 @@ async def upload_kmvida(
                               vida=_fnum(r[C_VI]) if C_VI else None, km_vida=km))
             count += 1
     db.commit()
-    _audit(db, inspector, "cargar-kmvida", file.filename or "archivo", f"{count} registros")
-    return {"ok": True, "count": count}
+
+    # ── Enriquecer la FLOTA con km EXACTO por llanta (para Inteligencia/CPK) ──
+    # km_total = suma de todas las vidas; km_life = km de la vida más reciente.
+    from collections import defaultdict
+    tot = defaultdict(float)
+    last = {}   # code -> (vida, km)
+    for k in db.query(TireKmVida).filter(TireKmVida.company_id == cid).all():
+        tot[k.code] += (k.km_vida or 0)
+        v = k.vida or 0
+        if k.code not in last or v >= last[k.code][0]:
+            last[k.code] = (v, k.km_vida or 0)
+    enriched = 0
+    for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
+        cc = (s.code or "").strip().upper()
+        if cc in tot:
+            s.km_total = round(tot[cc], 0)
+            if cc in last:
+                s.km_life = round(last[cc][1], 0)
+            enriched += 1
+    db.commit()
+    from .inspections import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+    _audit(db, inspector, "cargar-kmvida", file.filename or "archivo",
+           f"{count} registros · {enriched} llantas de flota con km exacto")
+    return {"ok": True, "count": count, "flotaEnriquecida": enriched}
 
 
 def _pdate(s):
@@ -2205,6 +2228,70 @@ def get_desgaste(
         "porVencerCount": len(porVencer),
         "promedioKmVida": prom_km_vida,
         "topKm": topKm,
+    }
+
+
+@router.get("/plan-cambios")
+def get_plan_cambios(
+    dias: int = 60,
+    minCocada: float = 4.0,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Plan de cambios: llantas MONTADAS que llegan a la cocada mínima dentro
+    de <dias>, según su tasa de desgaste real (LLMedida). Agrupado por unidad."""
+    import datetime as _dt
+    from collections import defaultdict
+    cid = inspector.company_id
+    hoy = _dt.date.today()
+
+    # tasa de desgaste + última cocada por código (de las medidas)
+    meds = db.query(TireMedida).filter(TireMedida.company_id == cid).all()
+    by = defaultdict(list)
+    for m in meds:
+        d = _pdate(m.fecha)
+        if d and m.cocada is not None:
+            by[m.code].append((d, m.cocada))
+    rate, lastc = {}, {}
+    for c, pts in by.items():
+        pts.sort(key=lambda x: x[0])
+        lastc[c] = pts[-1][1]
+        if len(pts) >= 2:
+            mm = pts[0][1] - pts[-1][1]
+            days = (pts[-1][0] - pts[0][0]).days
+            if mm > 0 and days > 0:
+                rate[c] = mm / days      # mm/día
+
+    items = []
+    for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
+        c = (s.code or "").strip().upper()
+        coc = lastc.get(c, s.last_depth_mm)
+        if coc is None:
+            continue
+        if coc <= minCocada:
+            items.append({"plate": s.plate, "position": s.position, "code": s.code,
+                          "cocada": coc, "diasRestantes": 0, "urgencia": "urgente"})
+        elif c in rate and rate[c] > 0:
+            dd = int((coc - minCocada) / rate[c])
+            if dd <= dias:
+                items.append({"plate": s.plate, "position": s.position, "code": s.code,
+                              "cocada": coc, "diasRestantes": dd,
+                              "fecha": (hoy + _dt.timedelta(days=dd)).isoformat(),
+                              "urgencia": "critico" if dd <= 15 else "proximo"})
+    items.sort(key=lambda x: x["diasRestantes"])
+    porUnidad = defaultdict(list)
+    for it in items:
+        porUnidad[it["plate"]].append(it)
+    unidades = sorted([{"plate": p, "llantas": len(v), "items": v} for p, v in porUnidad.items()],
+                      key=lambda x: (min(i["diasRestantes"] for i in x["items"]), -x["llantas"]))
+    return {
+        "dias": dias, "minCocada": minCocada,
+        "totalLlantas": len(items),
+        "urgentes": sum(1 for i in items if i["urgencia"] == "urgente"),
+        "criticos": sum(1 for i in items if i["urgencia"] == "critico"),
+        "unidadesAfectadas": len(porUnidad),
+        "items": items[:1000],
+        "porUnidad": unidades[:200],
     }
 
 
