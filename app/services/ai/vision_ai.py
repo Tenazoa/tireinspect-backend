@@ -57,6 +57,30 @@ def _extract_json(text: str) -> dict | None:
         return None
 
 
+def vision_diagnostic() -> dict:
+    """Diagnóstico: por qué la visión no corre. Temporal, para depurar."""
+    out = {"hasKey": bool(os.getenv("ANTHROPIC_API_KEY")), "model": _MODEL,
+           "anthropicImport": False, "testCall": None, "error": None}
+    try:
+        import anthropic  # noqa
+        out["anthropicImport"] = True
+        out["anthropicVersion"] = getattr(anthropic, "__version__", "?")
+    except Exception as e:
+        out["error"] = f"import anthropic: {e}"
+        return out
+    if not out["hasKey"]:
+        out["error"] = "Falta ANTHROPIC_API_KEY en el entorno"
+        return out
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        msg = client.messages.create(model=_MODEL, max_tokens=10,
+                                      messages=[{"role": "user", "content": "di OK"}])
+        out["testCall"] = "".join(getattr(b, "text", "") for b in msg.content)[:50]
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+    return out
+
+
 def analyze_tire_vision(image_bytes: bytes, brand: str | None = None,
                         size: str | None = None, position: str | None = None) -> dict | None:
     """Devuelve dict normalizado o None si no hay clave / falla (→ fallback OpenCV)."""

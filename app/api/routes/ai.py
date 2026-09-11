@@ -7,7 +7,7 @@ from ...core.database import get_db
 from ...api.deps import get_current_inspector
 from ...models.models import Inspector, TireSpec, Vehicle
 from ...services.ai.tire_analyzer import analyze_tire_image, WEAR_LEVELS
-from ...services.ai.vision_ai import analyze_tire_vision
+from ...services.ai.vision_ai import analyze_tire_vision, vision_diagnostic
 from ...services.ai.dataset_collector import save_training_sample, get_dataset_stats
 from ...services.ai.reference_measurement import measure_with_reference, REFERENCE_OBJECTS
 
@@ -42,6 +42,12 @@ def wear_to_recommendation(wear_level: str) -> str:
         "replace": "replace_now",
         "unknown": "monitor",
     }.get(wear_level, "monitor")
+
+
+@router.get("/vision-status")
+def vision_status(_: Inspector = Depends(get_current_inspector)):
+    """Diagnóstico temporal de la IA de visión."""
+    return vision_diagnostic()
 
 
 @router.post("/analyze", response_model=TireAnalysisOut)
