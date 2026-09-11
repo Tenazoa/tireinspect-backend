@@ -21,20 +21,29 @@ Analiza LA FOTO del neumático y responde SOLO con un objeto JSON válido, sin t
 {
   "es_llanta": true|false,
   "cocada_mm": number,            // profundidad estimada del surco en mm (0 a 24). Camión nuevo ~18-22, límite legal ~1.6-3
-  "nivel": "new"|"low"|"medium"|"high"|"replace",
-  "score": number,               // 0-100 (100 = nueva)
   "patron": "uniform"|"center"|"edge_inner"|"edge_outer"|"edge_both"|"cupping"|"diagonal",
   "defectos": [ ... ],           // de: "grieta","corte","abultamiento","cordon_expuesto","objeto_incrustado","desgaste_irregular","desprendimiento","separacion_banda". [] si no hay
-  "codigo_fuego": string|null,   // el código grabado en el flanco si es legible, si no null
+  "codigo_fuego": string|null,   // SOLO el número/código GRABADO en el flanco (ej "19885"). NUNCA la marca ni la medida. Si no hay número legible: null
   "recomendacion": "ok"|"monitor"|"replace_soon"|"replace_now",
   "notas": string                // 1 frase corta en español para el inspector
 }
 
 Reglas:
 - Si la imagen NO es un neumático, devuelve es_llanta=false y el resto en valores neutros.
-- Sé conservador: ante duda de seguridad (grietas, cordón expuesto, abultamiento) sube la recomendación.
+- La recomendación debe ser COHERENTE con la cocada y los defectos: cocada<=3mm o defecto grave (grieta/corte/cordón/abultamiento/separación) => "replace_now".
+- Sé conservador: ante duda de seguridad sube la recomendación.
+- codigo_fuego: solo dígitos/código grabado; si ves la marca o la medida NO las pongas ahí (usa null).
 - La cocada es una ESTIMACIÓN visual; si hay poca certeza dilo en notas.
 Contexto de la llanta (puede ayudar): %s"""
+
+
+def _nivel_from_cocada(mm: float) -> tuple[str, int]:
+    """Nivel + score coherentes con la cocada (llanta de camión, máx ~22mm)."""
+    if mm >= 14:   return "new", min(100, int(mm / 22 * 100))
+    if mm >= 8:    return "low", 75
+    if mm >= 5:    return "medium", 55
+    if mm >= 3:    return "high", 32
+    return "replace", max(5, int(mm / 3 * 15))
 
 
 def _media_type(image_bytes: bytes) -> str:
@@ -118,19 +127,8 @@ def analyze_tire_vision(image_bytes: bytes, brand: str | None = None,
         if not data:
             return None
 
-        NIVELES = {"new", "low", "medium", "high", "replace"}
         PATRONES = {"uniform", "center", "edge_inner", "edge_outer", "edge_both", "cupping", "diagonal"}
         RECS = {"ok", "monitor", "replace_soon", "replace_now"}
-
-        nivel = str(data.get("nivel", "")).lower()
-        if nivel not in NIVELES:
-            nivel = "unknown"
-        patron = str(data.get("patron", "")).lower()
-        if patron not in PATRONES:
-            patron = "uniform"
-        rec = str(data.get("recomendacion", "")).lower()
-        if rec not in RECS:
-            rec = "monitor"
 
         def fnum(v, default=0.0):
             try:
@@ -139,12 +137,35 @@ def analyze_tire_vision(image_bytes: bytes, brand: str | None = None,
                 return default
 
         cocada = max(0.0, min(24.0, fnum(data.get("cocada_mm"), 0.0)))
-        score = int(max(0, min(100, fnum(data.get("score"), 0))))
+        # nivel + score SIEMPRE coherentes con la cocada (no confiamos en el modelo aquí)
+        nivel, score = _nivel_from_cocada(cocada)
+
+        patron = str(data.get("patron", "")).lower()
+        if patron not in PATRONES:
+            patron = "uniform"
+
         defectos = data.get("defectos") or []
         if not isinstance(defectos, list):
             defectos = []
+        graves = {"grieta", "corte", "abultamiento", "cordon_expuesto", "separacion_banda", "desprendimiento"}
+        tiene_grave = any(str(d).lower() in graves for d in defectos)
+
+        rec = str(data.get("recomendacion", "")).lower()
+        if rec not in RECS:
+            rec = "monitor"
+        # Coherencia: cocada crítica o defecto grave => cambio urgente
+        if cocada <= 3 or tiene_grave:
+            rec = "replace_now"
+
+        # código de fuego: solo si es un código real (no la marca/medida)
         codigo = data.get("codigo_fuego")
         codigo = str(codigo).strip() if codigo else None
+        if codigo:
+            up = codigo.upper()
+            bad = (brand and up == str(brand).upper()) or (size and up == str(size).upper()) \
+                or not any(ch.isdigit() for ch in codigo) or len(codigo) > 20
+            if bad:
+                codigo = None
 
         return {
             "engine": "vision",
