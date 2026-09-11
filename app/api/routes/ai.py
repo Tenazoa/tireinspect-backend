@@ -7,6 +7,7 @@ from ...core.database import get_db
 from ...api.deps import get_current_inspector
 from ...models.models import Inspector, TireSpec, Vehicle
 from ...services.ai.tire_analyzer import analyze_tire_image, WEAR_LEVELS
+from ...services.ai.vision_ai import analyze_tire_vision
 from ...services.ai.dataset_collector import save_training_sample, get_dataset_stats
 from ...services.ai.reference_measurement import measure_with_reference, REFERENCE_OBJECTS
 
@@ -28,6 +29,8 @@ class TireAnalysisOut(BaseModel):
     defects: list[str]
     recommendation: str
     analysis_notes: str
+    engine: str = "opencv"          # "vision" (Claude) | "opencv" (fallback)
+    fire_code: Optional[str] = None  # código de fuego leído de la foto (solo visión)
 
 
 def wear_to_recommendation(wear_level: str) -> str:
@@ -60,7 +63,34 @@ async def analyze_tire(
     if len(image_bytes) < 1000:
         raise HTTPException(400, "Imagen demasiado pequeña o vacía")
 
-    # Análisis principal
+    # ── SUPER IA: intentar primero con visión (Claude). Si no hay clave o
+    # falla, se cae al análisis OpenCV. Así nunca se rompe. ──
+    vision = analyze_tire_vision(image_bytes, brand=tire_brand, size=tire_size, position=position)
+    if vision and vision.get("is_tire_detected"):
+        depth = vision["estimated_depth_mm"]
+        wear_label = WEAR_LEVELS.get(vision["wear_level"], {}).get("label", vision["wear_level"])
+        try:
+            save_training_sample(
+                image_bytes=image_bytes, inspection_id=inspection_id, position=position,
+                manual_depth_mm=manual_depth_mm,
+                manual_recommendation=manual_recommendation or vision["recommendation"],
+                ai_result={"wear_level": vision["wear_level"], "condition_score": vision["condition_score"],
+                           "confidence": 0.9, "estimated_depth_mm": depth, "engine": "vision"},
+                wear_pattern=wear_pattern or vision["wear_pattern"],
+                tire_brand=tire_brand, tire_size=tire_size,
+            )
+        except Exception:
+            pass
+        return TireAnalysisOut(
+            is_tire_detected=True, wear_level=vision["wear_level"], wear_level_label=wear_label,
+            confidence=0.9, condition_score=vision["condition_score"], estimated_depth_mm=depth,
+            depth_inner_mm=depth, depth_center_mm=depth, depth_outer_mm=depth,
+            wear_pattern=vision["wear_pattern"], pattern_confidence=0.85,
+            defects=vision["defects"], recommendation=vision["recommendation"],
+            analysis_notes=vision["notes"], engine="vision", fire_code=vision.get("fire_code"),
+        )
+
+    # Análisis principal (fallback OpenCV)
     result = analyze_tire_image(image_bytes)
 
     # Guardar en dataset para entrenamiento futuro
