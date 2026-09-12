@@ -2931,13 +2931,14 @@ def get_fleet_tires(
     anio_actual = _dt.date.today().year
 
     def km_desde(d):
-        """km recorridos después de la fecha d (o del año en curso si no hay fecha)."""
+        """km recorridos DESPUÉS de la fecha d (mes siguiente en adelante)."""
         if d is None:
-            return sum(v for (y, m), v in km_month.items() if y == anio_actual)
+            return None
         return sum(v for (y, m), v in km_month.items()
                    if (y > d.year) or (y == d.year and m > d.month))
 
-    # Última cocada medida por código (para proyectar desde ahí)
+    # Fecha de referencia por llanta (cuándo se midió/instaló su cocada actual):
+    # 1) última medición en LLMedida, 2) FUltMedida/FechaIngreso del Detalle.
     meds = db.query(TireMedida).filter(TireMedida.company_id == cid).all()
     last_med = {}
     for mrec in meds:
@@ -2947,22 +2948,33 @@ def get_fleet_tires(
             if cur is None or dd > cur[0]:
                 last_med[mrec.code] = (dd, mrec.cocada)
 
+    det_fecha = {}
+    for r in db.query(TireDetalle).filter(TireDetalle.company_id == cid, TireDetalle.plate == p).all():
+        data = r.data or {}
+        for campo in ("FUltMedida", "FechaIngreso", "Fecha", "FechaPrimera"):
+            dd = _parse_ddmmyyyy(str(data.get(campo, "")))
+            if dd:
+                det_fecha[(r.code or "").strip().upper()] = dd
+                break
+
     out = []
     for s in specs:
+        code = (s.code or "").strip().upper()
         base = s.last_depth_mm
-        fecha_med = None
-        med = last_med.get((s.code or "").strip().upper()) if s.code else None
+        ref = det_fecha.get(code)
+        med = last_med.get(code)
         if med:
-            fecha_med, base = med[0], med[1]
-        km = km_desde(fecha_med)
-        proj = None
-        if base is not None:
+            base = med[1]
+            ref = med[0] if (ref is None or med[0] > ref) else ref
+        km = km_desde(ref)
+        proj = base
+        if base is not None and km is not None:
             proj = round(max(0.0, base - km / KM_POR_MM), 1)
         out.append(TireSpecOut(
             position=s.position, brand=s.brand, model=s.model, size=s.size,
             lastDepthMm=s.last_depth_mm, code=s.code, life=s.life,
             kmTotal=s.km_total, kmLife=s.km_life,
             pressurePsi=_pressure(vtype, s.position),
-            projectedDepthMm=proj, kmDriven=round(km, 0),
+            projectedDepthMm=proj, kmDriven=round(km, 0) if km is not None else None,
         ))
     return out
