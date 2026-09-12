@@ -2295,6 +2295,70 @@ def get_plan_cambios(
     }
 
 
+@router.get("/pendientes-inspeccion")
+def get_pendientes_inspeccion(
+    km: float = 8000,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Unidades que RODARON más de <km> desde su última inspección → necesitan
+    inspección. Devuelve la cocada mínima estimada por desgaste."""
+    import datetime as _dt
+    from collections import defaultdict
+    cid = inspector.company_id
+    hoy = _dt.date.today()
+
+    # cocada mínima actual por placa (montadas)
+    specs = db.query(TireSpec).filter(TireSpec.company_id == cid).all()
+    min_coc = {}
+    n_llantas = defaultdict(int)
+    for s in specs:
+        n_llantas[s.plate] += 1
+        if s.last_depth_mm is not None:
+            if s.plate not in min_coc or s.last_depth_mm < min_coc[s.plate]:
+                min_coc[s.plate] = s.last_depth_mm
+
+    # km por mes por placa
+    km_month = defaultdict(dict)
+    for k in db.query(VehicleKm).filter(VehicleKm.company_id == cid).all():
+        km_month[k.plate][(k.year, k.month)] = (k.km or 0)
+
+    # última inspección por placa
+    veh = {v.id: v.plate for v in db.query(Vehicle).filter(Vehicle.company_id == cid).all()}
+    last_insp = {}
+    for i in db.query(Inspection).all():
+        p = veh.get(i.vehicle_id)
+        if not p or not i.created_at:
+            continue
+        d = i.created_at.date() if hasattr(i.created_at, "date") else i.created_at
+        if p not in last_insp or d > last_insp[p]:
+            last_insp[p] = d
+
+    def km_desde(plate, d):
+        meses = km_month.get(plate, {})
+        if d is None:
+            return sum(v for (y, m), v in meses.items() if y == hoy.year)
+        return sum(v for (y, m), v in meses.items()
+                   if (y > d.year) or (y == d.year and m > d.month))
+
+    items = []
+    for plate in n_llantas:
+        d = last_insp.get(plate)
+        recorrido = km_desde(plate, d)
+        if recorrido <= km:
+            continue
+        mc = min_coc.get(plate)
+        est = round(max(0.0, mc - recorrido / KM_POR_MM), 1) if mc is not None else None
+        items.append({
+            "plate": plate, "kmRecorrido": round(recorrido, 0),
+            "ultimaInspeccion": d.isoformat() if d else None,
+            "cocadaMinActual": mc, "cocadaMinEstimada": est,
+            "llantas": n_llantas[plate],
+        })
+    items.sort(key=lambda x: -x["kmRecorrido"])
+    return {"umbralKm": km, "total": len(items), "items": items}
+
+
 @router.get("/kpis")
 def get_kpis(
     db: Session = Depends(get_db),
