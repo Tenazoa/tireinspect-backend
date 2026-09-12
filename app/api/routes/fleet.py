@@ -2890,6 +2890,12 @@ class TireSpecOut(BaseModel):
     kmTotal: Optional[float] = None
     kmLife: Optional[float] = None
     pressurePsi: Optional[float] = None
+    projectedDepthMm: Optional[float] = None   # cocada estimada HOY por km recorrido
+    kmDriven: Optional[float] = None            # km recorridos desde la última medida
+
+
+# Desgaste estimado: ~1 mm por cada RATE km recorridos (regla TYMSAC).
+KM_POR_MM = 8000.0
 
 
 def _pressure(vehicle_type: Optional[str], position: str) -> Optional[float]:
@@ -2907,21 +2913,56 @@ def get_fleet_tires(
     _: Inspector = Depends(get_current_inspector),
 ):
     """Autollenado: llantas conocidas de una placa (marca/modelo/medida/última cocada/presión)."""
+    import datetime as _dt
     p = plate.strip().upper().replace("-", "").replace(" ", "")
     vehicle = db.query(Vehicle).filter(Vehicle.plate == p).first()
     vtype = vehicle.type if vehicle else None
+    cid = _.company_id
     specs = (
         db.query(TireSpec)
         .filter(TireSpec.plate == p)
         .order_by(TireSpec.position)
         .all()
     )
-    return [
-        TireSpecOut(
+
+    # Km recorrido por mes de esta placa (para estimar el desgaste)
+    kmrows = db.query(VehicleKm).filter(VehicleKm.company_id == cid, VehicleKm.plate == p).all()
+    km_month = {(k.year, k.month): (k.km or 0) for k in kmrows}
+    anio_actual = _dt.date.today().year
+
+    def km_desde(d):
+        """km recorridos después de la fecha d (o del año en curso si no hay fecha)."""
+        if d is None:
+            return sum(v for (y, m), v in km_month.items() if y == anio_actual)
+        return sum(v for (y, m), v in km_month.items()
+                   if (y > d.year) or (y == d.year and m > d.month))
+
+    # Última cocada medida por código (para proyectar desde ahí)
+    meds = db.query(TireMedida).filter(TireMedida.company_id == cid).all()
+    last_med = {}
+    for mrec in meds:
+        dd = _pdate(mrec.fecha)
+        if dd and mrec.cocada is not None:
+            cur = last_med.get(mrec.code)
+            if cur is None or dd > cur[0]:
+                last_med[mrec.code] = (dd, mrec.cocada)
+
+    out = []
+    for s in specs:
+        base = s.last_depth_mm
+        fecha_med = None
+        med = last_med.get((s.code or "").strip().upper()) if s.code else None
+        if med:
+            fecha_med, base = med[0], med[1]
+        km = km_desde(fecha_med)
+        proj = None
+        if base is not None:
+            proj = round(max(0.0, base - km / KM_POR_MM), 1)
+        out.append(TireSpecOut(
             position=s.position, brand=s.brand, model=s.model, size=s.size,
             lastDepthMm=s.last_depth_mm, code=s.code, life=s.life,
             kmTotal=s.km_total, kmLife=s.km_life,
             pressurePsi=_pressure(vtype, s.position),
-        )
-        for s in specs
-    ]
+            projectedDepthMm=proj, kmDriven=round(km, 0),
+        ))
+    return out
