@@ -296,3 +296,18 @@ class TireKmVida(Base):
     vida: Mapped[float | None] = mapped_column(Float, nullable=True)        # ciclo
     km_vida: Mapped[float | None] = mapped_column(Float, nullable=True)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
+class VehicleVigilancia(Base):
+    """Resumen de programación por placa desde el Reporte de Vigilancia de SOLOMON
+    (TRRepVigilancia): última y primera salida real, y la base (sede) de la última
+    salida. Sirve para saber qué unidades siguen operando y cuáles llevan meses/años
+    paradas (para aprovechar sus llantas)."""
+    __tablename__ = "vehicle_vigilancia"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    plate: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    base: Mapped[str | None] = mapped_column(String, nullable=True)          # Lima / Chiclayo
+    ultima_salida: Mapped[str | None] = mapped_column(String, nullable=True)  # yyyy-mm-dd
+    primera_salida: Mapped[str | None] = mapped_column(String, nullable=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)

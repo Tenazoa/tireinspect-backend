@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia
 
 
 def _audit(db, inspector, action, target, detail):
@@ -2137,6 +2137,148 @@ async def upload_kmvida(
     _audit(db, inspector, "cargar-kmvida", file.filename or "archivo",
            f"{count} registros · {enriched} llantas de flota con km exacto")
     return {"ok": True, "count": count, "flotaEnriquecida": enriched}
+
+
+@router.post("/upload-vigilancia")
+async def upload_vigilancia(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Resumen del Reporte de Vigilancia de SOLOMON (TRRepVigilancia): por placa,
+    última y primera salida real + base (Lima/Chiclayo) de la última salida.
+    Sirve para saber qué unidades siguen programándose y cuáles llevan meses/años
+    paradas."""
+    cid = inspector.company_id
+    df = _clean_rows(await file.read(), file.filename)
+    cols = {c.lower(): c for c in df.columns}
+
+    def col(*cs):
+        for c in cs:
+            if c.lower() in cols:
+                return cols[c.lower()]
+        return None
+
+    C_PLA, C_ULT, C_PRI, C_SED = col("Placa"), col("UltSalida", "UltimaSalida"), col("PrimSalida", "PrimeraSalida"), col("Sede", "Base")
+    if not (C_PLA and C_ULT):
+        raise HTTPException(400, f"Faltan columnas Placa/UltSalida. Detectadas: {list(df.columns)[:10]}")
+
+    SEDE_MAP = {"LIM": "Lima", "CIX": "Chiclayo"}
+
+    def iso(v):
+        # el export escribe dd/mm/YYYY; guardamos yyyy-mm-dd
+        d = _parse_ddmmyyyy(str(v).strip())
+        return d.isoformat() if d else None
+
+    db.query(VehicleVigilancia).filter(VehicleVigilancia.company_id == cid).delete()
+    count = 0
+    for _, r in df.iterrows():
+        plate = str(r[C_PLA]).strip().upper().replace(" ", "").replace("-", "")
+        if not plate:
+            continue
+        sede = str(r[C_SED]).strip().upper() if C_SED else ""
+        db.add(VehicleVigilancia(
+            company_id=cid, plate=plate,
+            base=SEDE_MAP.get(sede, sede or None),
+            ultima_salida=iso(r[C_ULT]),
+            primera_salida=iso(r[C_PRI]) if C_PRI else None,
+        ))
+        count += 1
+    db.commit()
+    _audit(db, inspector, "cargar-vigilancia", file.filename or "archivo", f"{count} placas")
+    return {"ok": True, "count": count}
+
+
+@router.get("/aprovechables")
+def get_aprovechables(
+    meses: int = 6,
+    umbral: float = 5.0,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Clasifica las unidades por programación (última salida real) y cruza con la
+    cocada mínima de sus llantas montadas. Identifica las paradas > `meses` meses
+    CON llantas buenas (cocada mín >= `umbral` mm) para aprovechar/transferir."""
+    import datetime as _dt
+    from collections import defaultdict
+    cid = inspector.company_id
+    hoy = _dt.date.today()
+
+    # cocada mínima + nº de llantas por placa (montadas, desde TireSpec)
+    min_coc, n_ll = {}, defaultdict(int)
+    vtype = {}
+    for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
+        n_ll[s.plate] += 1
+        if s.vehicle_type and s.plate not in vtype:
+            vtype[s.plate] = s.vehicle_type
+        if s.last_depth_mm is not None:
+            if s.plate not in min_coc or s.last_depth_mm < min_coc[s.plate]:
+                min_coc[s.plate] = s.last_depth_mm
+
+    # vigilancia por placa
+    vig = {v.plate: v for v in db.query(VehicleVigilancia).filter(VehicleVigilancia.company_id == cid).all()}
+
+    def pdate(s):
+        return _pdate(s) if s else None
+
+    items = []
+    for plate, nll in n_ll.items():
+        v = vig.get(plate)
+        ult = pdate(v.ultima_salida) if v else None
+        dias = (hoy - ult).days if ult else None
+        corrio_ano = bool(ult and ult.year == hoy.year)
+        mc = min_coc.get(plate)
+        buena = (mc is not None and mc >= umbral)
+        if dias is None:
+            cat = "sin_registro"
+        elif dias <= 60:
+            cat = "activa"
+        elif dias <= 180:
+            cat = "parada_2_6"
+        elif dias <= 365:
+            cat = "parada_6_12"
+        else:
+            cat = "parada_mas_12"
+        items.append({
+            "plate": plate,
+            "base": (v.base if v else None) or "Sin base",
+            "ultimaSalida": v.ultima_salida if v else None,
+            "diasSinProgramar": dias,
+            "cocadaMin": mc,
+            "llantas": nll,
+            "buenasLlantas": buena,
+            "corrioEsteAnio": corrio_ano,
+            "categoria": cat,
+        })
+
+    # resumen por base
+    CAT_ORDER = ["activa", "parada_2_6", "parada_6_12", "parada_mas_12", "sin_registro"]
+    resumen = defaultdict(lambda: {"total": 0, "corrioAnio": 0, "noCorrioAnio": 0,
+                                   "porCategoria": {c: {"total": 0, "buenas": 0} for c in CAT_ORDER}})
+    for it in items:
+        b = resumen[it["base"]]
+        b["total"] += 1
+        b["corrioAnio" if it["corrioEsteAnio"] else "noCorrioAnio"] += 1
+        pc = b["porCategoria"][it["categoria"]]
+        pc["total"] += 1
+        if it["buenasLlantas"]:
+            pc["buenas"] += 1
+
+    # lista aprovechable: paradas > meses con buenas llantas
+    dias_umbral = meses * 30
+    aprovechables = [it for it in items
+                     if it["diasSinProgramar"] is not None
+                     and it["diasSinProgramar"] > dias_umbral
+                     and it["buenasLlantas"]]
+    aprovechables.sort(key=lambda x: (x["base"], -(x["cocadaMin"] or 0)))
+
+    items.sort(key=lambda x: (x["base"], -(x["diasSinProgramar"] or -1)))
+    return {
+        "meses": meses, "umbralMm": umbral,
+        "resumenPorBase": {k: v for k, v in resumen.items()},
+        "aprovechables": aprovechables,
+        "unidades": items,
+    }
 
 
 def _pdate(s):
