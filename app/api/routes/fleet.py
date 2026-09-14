@@ -2236,6 +2236,11 @@ def get_aprovechables(
             if s.plate not in min_coc or s.last_depth_mm < min_coc[s.plate]:
                 min_coc[s.plate] = s.last_depth_mm
 
+    # Override manual de medida por placa (corrige registros errados/vacíos de SOLOMON)
+    MEDIDA_OVERRIDE = {"M2B991": "12R22.5"}
+    for _pl, _sz in MEDIDA_OVERRIDE.items():
+        sizes[_pl] = {_sz.upper().replace(" ", "")}
+
     def _aro(sz: str):
         m = re.search(r"R(\d{2}(?:\.\d)?)", sz)          # radial: 295/80R22.5, 11R22.5
         if m:
