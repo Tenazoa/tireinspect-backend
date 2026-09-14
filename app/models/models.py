@@ -312,4 +312,5 @@ class VehicleVigilancia(Base):
     primera_salida: Mapped[str | None] = mapped_column(String, nullable=True)
     tipo_unidad: Mapped[str | None] = mapped_column(String, nullable=True)    # TRACTO / CARRETA
     tipo_vehiculo: Mapped[str | None] = mapped_column(String, nullable=True)  # Plataforma, Media Baranda, etc.
+    marca: Mapped[str | None] = mapped_column(String, nullable=True)          # SCANIA, VOLVO, etc. (TRPlacas)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)

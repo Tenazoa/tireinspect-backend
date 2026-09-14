@@ -2161,6 +2161,7 @@ async def upload_vigilancia(
 
     C_PLA, C_ULT, C_PRI, C_SED = col("Placa"), col("UltSalida", "UltimaSalida"), col("PrimSalida", "PrimeraSalida"), col("Sede", "Base")
     C_TU, C_TC = col("TipoUnidad"), col("TipoCarreta", "TipoVehiculo")
+    C_MAR, C_TR = col("Marca"), col("TipoReal", "Tipo")
     if not (C_PLA and C_ULT):
         raise HTTPException(400, f"Faltan columnas Placa/UltSalida. Detectadas: {list(df.columns)[:10]}")
 
@@ -2186,6 +2187,14 @@ async def upload_vigilancia(
         sede = str(r[C_SED]).strip().upper() if C_SED else ""
         tu = (str(r[C_TU]).strip().upper() if C_TU else "") or None
         cod = (str(r[C_TC]).strip().upper() if C_TC else "")
+        marca = (str(r[C_MAR]).strip().upper() if C_MAR else "") or None
+        # Tipo REAL desde TRPlacas (T=tracto, C=carreta) manda sobre el de
+        # LLDETALLELLANTAS, que trae varios tractos mal marcados como carreta.
+        treal = (str(r[C_TR]).strip().upper() if C_TR else "")
+        if treal == "T":
+            tu = "TRACTO"
+        elif treal == "C":
+            tu = "CARRETA"
         if tu == "TRACTO":
             tveh = "Tractocamión"
         elif cod:
@@ -2199,7 +2208,7 @@ async def upload_vigilancia(
             base=SEDE_MAP.get(sede, sede or None),
             ultima_salida=iso(r[C_ULT]),
             primera_salida=iso(r[C_PRI]) if C_PRI else None,
-            tipo_unidad=tu, tipo_vehiculo=tveh,
+            tipo_unidad=tu, tipo_vehiculo=tveh, marca=marca,
         ))
         count += 1
     db.commit()
@@ -2277,11 +2286,19 @@ def get_aprovechables(
         return _pdate(s) if s else None
 
     EXCLUIR_PLACAS = {"CAR001"}
+
+    def _is_scania(m):
+        n = re.sub(r"[^A-Z]", "", (m or "").upper())
+        return "SCANIA" in n or n in {"SACNIA", "SACANIA", "SCANIIA"}
+
     items = []
     for plate, nll in n_ll.items():
         if plate in EXCLUIR_PLACAS:
             continue
         v = vig.get(plate)
+        # Excluir SCANIA: están para venta, no entran al aprovechamiento de llantas.
+        if v and _is_scania(v.marca):
+            continue
         tu = (v.tipo_unidad if v else None) or None
         # Solo tractos y carretas; se excluyen camionetas / otros
         if tu not in ("TRACTO", "CARRETA"):
@@ -2316,6 +2333,7 @@ def get_aprovechables(
         items.append({
             "plate": plate,
             "base": (v.base if v else None) or "Sin base",
+            "marca": (v.marca if v else None) or "—",
             "tipoUnidad": "Tracto" if tu == "TRACTO" else "Carreta",
             "tipoVehiculo": (v.tipo_vehiculo if v else None) or "—",
             "aro": cl["aro"],
