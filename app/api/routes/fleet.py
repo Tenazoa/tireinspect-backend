@@ -2308,9 +2308,10 @@ def get_aprovechables(
                 continue
         except (TypeError, ValueError):
             pass
-        # Excluir unidades de perfil liviano 275/70R22.5 (no son de la flota pesada)
+        # Excluir unidades de perfil liviano 275/70R22.5 (no son de la flota pesada).
+        # Basta con que tengan una 275/70 montada: la flota pesada no usa esa medida.
         szs = sizes.get(plate, set())
-        if szs and all(s.startswith("275/70") for s in szs):
+        if any(s.startswith("275/70") for s in szs):
             continue
         items.append({
             "plate": plate,
