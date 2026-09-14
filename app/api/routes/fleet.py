@@ -2222,16 +2222,48 @@ def get_aprovechables(
     cid = inspector.company_id
     hoy = _dt.date.today()
 
-    # cocada mínima + nº de llantas por placa (montadas, desde TireSpec)
+    # cocada mínima + nº de llantas + medidas por placa (montadas, desde TireSpec)
     min_coc, n_ll = {}, defaultdict(int)
     vtype = {}
+    sizes = defaultdict(set)   # plate -> set de medidas
     for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
         n_ll[s.plate] += 1
         if s.vehicle_type and s.plate not in vtype:
             vtype[s.plate] = s.vehicle_type
+        if s.size:
+            sizes[s.plate].add(str(s.size).strip().upper().replace(" ", ""))
         if s.last_depth_mm is not None:
             if s.plate not in min_coc or s.last_depth_mm < min_coc[s.plate]:
                 min_coc[s.plate] = s.last_depth_mm
+
+    def _aro(sz: str):
+        m = re.search(r"R(\d{2}(?:\.\d)?)", sz)          # radial: 295/80R22.5, 11R22.5
+        if m:
+            return m.group(1)
+        m = re.search(r"-(\d{2}(?:\.\d)?)", sz)          # convencional: 12.00-20
+        if m:
+            return m.group(1)
+        return None
+
+    def clasif(plate):
+        szs = sizes.get(plate, set())
+        aros = sorted({a for a in (_aro(s) for s in szs) if a})
+        radial = any(re.search(r"R\d", s) for s in szs)
+        conv = any("-" in s and not re.search(r"R\d", s) for s in szs)
+        if radial and conv:
+            tipo = "Mixto"
+        elif radial:
+            tipo = "Radial"
+        elif conv:
+            tipo = "Convencional/Balón"
+        else:
+            tipo = "—"
+        aro = aros[0] if len(aros) == 1 else ("Mixto" if len(aros) > 1 else "—")
+        return {
+            "medidas": ", ".join(sorted(szs)) or "—",
+            "aro": aro,
+            "tipoLlanta": tipo,
+        }
 
     # vigilancia por placa
     vig = {v.plate: v for v in db.query(VehicleVigilancia).filter(VehicleVigilancia.company_id == cid).all()}
@@ -2264,11 +2296,15 @@ def get_aprovechables(
             cat = "parada_6_12"
         else:
             cat = "parada_mas_12"
+        cl = clasif(plate)
         items.append({
             "plate": plate,
             "base": (v.base if v else None) or "Sin base",
             "tipoUnidad": "Tracto" if tu == "TRACTO" else "Carreta",
             "tipoVehiculo": (v.tipo_vehiculo if v else None) or "—",
+            "aro": cl["aro"],
+            "tipoLlanta": cl["tipoLlanta"],
+            "medidas": cl["medidas"],
             "programacion": "Con programación" if corrio_ano else "Sin programación",
             "ultimaSalida": v.ultima_salida if v else None,
             "diasSinProgramar": dias,
