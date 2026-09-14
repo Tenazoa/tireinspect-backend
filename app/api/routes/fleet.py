@@ -2235,6 +2235,8 @@ def get_aprovechables(
     APROV_MM = 8.0   # cocada mínima para transferir/aprovechar una llanta
     min_coc, n_ll = {}, defaultdict(int)
     n_aprov = defaultdict(int)   # plate -> llantas con cocada >= APROV_MM
+    n_nueva = defaultdict(int)   # plate -> llantas nuevas (1V)
+    n_reenc = defaultdict(int)   # plate -> llantas reencauchadas (xR)
     vtype = {}
     sizes = defaultdict(set)   # plate -> set de medidas
     for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
@@ -2243,6 +2245,11 @@ def get_aprovechables(
             vtype[s.plate] = s.vehicle_type
         if s.size:
             sizes[s.plate].add(str(s.size).strip().upper().replace(" ", ""))
+        lf = (s.life or "").strip().upper()
+        if lf.endswith("V"):        # 1V = nueva (primera vida)
+            n_nueva[s.plate] += 1
+        elif lf.endswith("R"):      # 1R, 2R, ... = reencauchada
+            n_reenc[s.plate] += 1
         if s.last_depth_mm is not None:
             if s.plate not in min_coc or s.last_depth_mm < min_coc[s.plate]:
                 min_coc[s.plate] = s.last_depth_mm
@@ -2349,6 +2356,8 @@ def get_aprovechables(
             "cocadaMin": mc,
             "llantas": nll,
             "llantasAprov": n_aprov.get(plate, 0),   # llantas ≥8mm (transferibles)
+            "llantasNuevas": n_nueva.get(plate, 0),  # 1V
+            "llantasReenc": n_reenc.get(plate, 0),   # xR
             "buenasLlantas": buena,
             "corrioEsteAnio": corrio_ano,
             "categoria": cat,
