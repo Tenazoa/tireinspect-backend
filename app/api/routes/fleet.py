@@ -2160,10 +2160,17 @@ async def upload_vigilancia(
         return None
 
     C_PLA, C_ULT, C_PRI, C_SED = col("Placa"), col("UltSalida", "UltimaSalida"), col("PrimSalida", "PrimeraSalida"), col("Sede", "Base")
+    C_TU, C_TC = col("TipoUnidad"), col("TipoCarreta", "TipoVehiculo")
     if not (C_PLA and C_ULT):
         raise HTTPException(400, f"Faltan columnas Placa/UltSalida. Detectadas: {list(df.columns)[:10]}")
 
     SEDE_MAP = {"LIM": "Lima", "CIX": "Chiclayo"}
+    # Código de carrocería de carreta → descripción legible (SOLOMON)
+    CARR_MAP = {
+        "G1": "Granelero", "P1": "Plataforma Simple", "P2": "Plataforma Contenedor",
+        "P3": "Plataforma Media Baranda", "P4": "Plataforma Refrigerado",
+        "F1": "Furgón", "C1": "Cama Baja",
+    }
 
     def iso(v):
         # el export escribe dd/mm/YYYY; guardamos yyyy-mm-dd
@@ -2177,11 +2184,22 @@ async def upload_vigilancia(
         if not plate:
             continue
         sede = str(r[C_SED]).strip().upper() if C_SED else ""
+        tu = (str(r[C_TU]).strip().upper() if C_TU else "") or None
+        cod = (str(r[C_TC]).strip().upper() if C_TC else "")
+        if tu == "TRACTO":
+            tveh = "Tractocamión"
+        elif cod:
+            tveh = CARR_MAP.get(cod, cod)
+        elif tu == "CARRETA":
+            tveh = "Carreta"
+        else:
+            tveh = None
         db.add(VehicleVigilancia(
             company_id=cid, plate=plate,
             base=SEDE_MAP.get(sede, sede or None),
             ultima_salida=iso(r[C_ULT]),
             primera_salida=iso(r[C_PRI]) if C_PRI else None,
+            tipo_unidad=tu, tipo_vehiculo=tveh,
         ))
         count += 1
     db.commit()
@@ -2221,9 +2239,16 @@ def get_aprovechables(
     def pdate(s):
         return _pdate(s) if s else None
 
+    EXCLUIR_PLACAS = {"CAR001"}
     items = []
     for plate, nll in n_ll.items():
+        if plate in EXCLUIR_PLACAS:
+            continue
         v = vig.get(plate)
+        tu = (v.tipo_unidad if v else None) or None
+        # Solo tractos y carretas; se excluyen camionetas / otros
+        if tu not in ("TRACTO", "CARRETA"):
+            continue
         ult = pdate(v.ultima_salida) if v else None
         dias = (hoy - ult).days if ult else None
         corrio_ano = bool(ult and ult.year == hoy.year)
@@ -2242,6 +2267,9 @@ def get_aprovechables(
         items.append({
             "plate": plate,
             "base": (v.base if v else None) or "Sin base",
+            "tipoUnidad": "Tracto" if tu == "TRACTO" else "Carreta",
+            "tipoVehiculo": (v.tipo_vehiculo if v else None) or "—",
+            "programacion": "Con programación" if corrio_ano else "Sin programación",
             "ultimaSalida": v.ultima_salida if v else None,
             "diasSinProgramar": dias,
             "cocadaMin": mc,

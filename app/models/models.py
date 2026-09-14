@@ -310,4 +310,6 @@ class VehicleVigilancia(Base):
     base: Mapped[str | None] = mapped_column(String, nullable=True)          # Lima / Chiclayo
     ultima_salida: Mapped[str | None] = mapped_column(String, nullable=True)  # yyyy-mm-dd
     primera_salida: Mapped[str | None] = mapped_column(String, nullable=True)
+    tipo_unidad: Mapped[str | None] = mapped_column(String, nullable=True)    # TRACTO / CARRETA
+    tipo_vehiculo: Mapped[str | None] = mapped_column(String, nullable=True)  # Plataforma, Media Baranda, etc.
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
