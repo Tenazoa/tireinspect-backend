@@ -2231,8 +2231,10 @@ def get_aprovechables(
     cid = inspector.company_id
     hoy = _dt.date.today()
 
-    # cocada mínima + nº de llantas + medidas por placa (montadas, desde TireSpec)
+    # cocada mínima + nº de llantas + nº de llantas ≥8mm (aprovechables) + medidas
+    APROV_MM = 8.0   # cocada mínima para transferir/aprovechar una llanta
     min_coc, n_ll = {}, defaultdict(int)
+    n_aprov = defaultdict(int)   # plate -> llantas con cocada >= APROV_MM
     vtype = {}
     sizes = defaultdict(set)   # plate -> set de medidas
     for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
@@ -2244,6 +2246,8 @@ def get_aprovechables(
         if s.last_depth_mm is not None:
             if s.plate not in min_coc or s.last_depth_mm < min_coc[s.plate]:
                 min_coc[s.plate] = s.last_depth_mm
+            if s.last_depth_mm >= APROV_MM:
+                n_aprov[s.plate] += 1
 
     # Override manual de medida por placa (corrige registros errados/vacíos de SOLOMON)
     MEDIDA_OVERRIDE = {"M2B991": "12R22.5"}
@@ -2344,6 +2348,7 @@ def get_aprovechables(
             "diasSinProgramar": dias,
             "cocadaMin": mc,
             "llantas": nll,
+            "llantasAprov": n_aprov.get(plate, 0),   # llantas ≥8mm (transferibles)
             "buenasLlantas": buena,
             "corrioEsteAnio": corrio_ano,
             "categoria": cat,
@@ -2370,10 +2375,32 @@ def get_aprovechables(
                      and it["buenasLlantas"]]
     aprovechables.sort(key=lambda x: (x["base"], -(x["cocadaMin"] or 0)))
 
+    # Dashboard por tiempo sin programación: <3 meses / 3-6 meses / +6 meses.
+    # Por bucket: nº de unidades y total de llantas ≥8mm aprovechables.
+    def _bucket(dias):
+        if dias is None:
+            return "sinRegistro"
+        if dias < 90:
+            return "menos3"
+        if dias <= 180:
+            return "tres6"
+        return "mas6"
+    TIEMPO_ORDER = ["menos3", "tres6", "mas6", "sinRegistro"]
+    resumenTiempo = {k: {"unidades": 0, "llantasAprov": 0, "conLlantasBuenas": 0}
+                     for k in TIEMPO_ORDER}
+    for it in items:
+        bk = _bucket(it["diasSinProgramar"])
+        rt = resumenTiempo[bk]
+        rt["unidades"] += 1
+        rt["llantasAprov"] += it["llantasAprov"]
+        if it["llantasAprov"] > 0:
+            rt["conLlantasBuenas"] += 1
+
     items.sort(key=lambda x: (x["base"], -(x["diasSinProgramar"] or -1)))
     return {
-        "meses": meses, "umbralMm": umbral,
+        "meses": meses, "umbralMm": umbral, "aprovMm": APROV_MM,
         "resumenPorBase": {k: v for k, v in resumen.items()},
+        "resumenTiempo": resumenTiempo,
         "aprovechables": aprovechables,
         "unidades": items,
     }
