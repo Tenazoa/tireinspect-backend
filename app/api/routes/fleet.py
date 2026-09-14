@@ -2297,6 +2297,12 @@ def get_aprovechables(
         else:
             cat = "parada_mas_12"
         cl = clasif(plate)
+        # Excluir camionetas / vehículos livianos: aro menor a 19" (14, 15, 16, 17)
+        try:
+            if cl["aro"] not in ("—", "Mixto") and float(cl["aro"]) < 19:
+                continue
+        except (TypeError, ValueError):
+            pass
         items.append({
             "plate": plate,
             "base": (v.base if v else None) or "Sin base",
