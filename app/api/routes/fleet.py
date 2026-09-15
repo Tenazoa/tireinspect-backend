@@ -1210,6 +1210,11 @@ def _det_brand(modelo, marca):
 # sin separadores, y la letra O ≡ 0 porque el sistema las mezcla).
 _DET_CODE_OVERRIDE = {
     "00000001": ("BLACKLION", "BA122"),   # 000-00001 → BLACKLION BA122 (no RELINO/RZ)
+    # Código de almacén de las DURATURN modelo Y237 (delanteras 2026, 90 llantas
+    # 295/80R22.5). SOLOMON las carga con modelo errado (HSR3); la marca es
+    # DURATURN pero el modelo correcto es Y237. (OJO: CO225151 hoy es CONTINENTAL
+    # 12R22.5, NO Duraturn — por eso no se incluye aquí.)
+    "C0332951": ("DURATURN", "Y237"),
 }
 
 
