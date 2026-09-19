@@ -2739,10 +2739,41 @@ def get_unidad_360(
                              "estado": "vencido" if dd < 0 else ("critico" if dd <= 15 else "ok")})
     # llantas montadas
     specs = db.query(TireSpec).filter(TireSpec.company_id == cid, TireSpec.plate == p).all()
-    llantas = sorted([{
-        "position": s.position, "code": s.code, "brand": s.brand, "model": s.model,
-        "size": s.size, "cocada": s.last_depth_mm, "vida": s.life, "kmTotal": s.km_total,
-    } for s in specs], key=lambda x: x["position"] or "")
+
+    # Fecha de instalación (FechaIngreso del Detalle) y recorrido km por llanta.
+    km_month = {(k.year, k.month): (k.km or 0) for k in kms}
+
+    def _km_desde(d):
+        if d is None:
+            return None
+        return sum(v for (y, m), v in km_month.items()
+                   if (y > d.year) or (y == d.year and m > d.month))
+
+    fecha_inst, fecha_inst_raw = {}, {}
+    for r in db.query(TireDetalle).filter(TireDetalle.company_id == cid, TireDetalle.plate == p).all():
+        data = r.data or {}
+        for campo in ("FechaIngreso", "Fecha", "FechaPrimera", "FUltMedida"):
+            raw = str(data.get(campo, "")).strip()
+            dd = _parse_ddmmyyyy(raw)
+            if dd:
+                code = (r.code or "").strip().upper()
+                fecha_inst[code] = dd
+                fecha_inst_raw[code] = raw
+                break
+
+    def _llanta(s):
+        code = (s.code or "").strip().upper()
+        fi = fecha_inst.get(code)
+        # recorrido: km real de la vida (LL_KmVida) si existe, si no km desde la instalación
+        km_rec = s.km_life if s.km_life else _km_desde(fi)
+        return {
+            "position": s.position, "code": s.code, "brand": s.brand, "model": s.model,
+            "size": s.size, "cocada": s.last_depth_mm, "vida": s.life, "kmTotal": s.km_total,
+            "fechaInstalacion": fecha_inst_raw.get(code),
+            "kmRecorrido": round(km_rec, 0) if km_rec is not None else None,
+        }
+
+    llantas = sorted([_llanta(s) for s in specs], key=lambda x: x["position"] or "")
 
     return {
         "plate": p,
