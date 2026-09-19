@@ -2260,10 +2260,32 @@ def reencauche_list(
 ):
     """Lista de llantas en el flujo de reencauche + resúmenes por estado y base."""
     from collections import Counter
+    cid = inspector.company_id
     rows = (db.query(ReencaucheTire)
-            .filter(ReencaucheTire.company_id == inspector.company_id)
+            .filter(ReencaucheTire.company_id == cid)
             .order_by(ReencaucheTire.created_at.desc()).all())
-    items = [_reenca_dict(r) for r in rows]
+
+    # Estándar (km esperado "Estimado TYM") por código, desde stock e inventario.
+    estandar = {}
+    for st in db.query(TireStock).filter(TireStock.company_id == cid).all():
+        k = (st.code or "").strip().upper()
+        if k and st.estimado_km and k not in estandar:
+            estandar[k] = st.estimado_km
+    for sp in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
+        k = (sp.code or "").strip().upper()
+        if k and sp.estimado_km and k not in estandar:
+            estandar[k] = sp.estimado_km
+
+    items = []
+    for r in rows:
+        it = _reenca_dict(r)
+        est = estandar.get((r.code or "").strip().upper())
+        km = r.km_recorrido
+        it["estandar"] = est
+        it["rendimientoPct"] = round(km / est * 100, 1) if (est and km) else None
+        it["condicionLlanta"] = "REENCAUCHE"   # todas las de esta lista van a reencauche
+        items.append(it)
+
     por_estado = Counter(r.estado or "en_base" for r in rows)
     por_base = Counter((r.base or "—") for r in rows)
     return {
