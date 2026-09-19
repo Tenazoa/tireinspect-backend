@@ -314,3 +314,16 @@ class VehicleVigilancia(Base):
     tipo_vehiculo: Mapped[str | None] = mapped_column(String, nullable=True)  # Plataforma, Media Baranda, etc.
     marca: Mapped[str | None] = mapped_column(String, nullable=True)          # SCANIA, VOLVO, etc. (TRPlacas)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
+class VehicleEstadoOficial(Base):
+    """Estado oficial operativa/inoperativa de cada placa según el Excel manual
+    LISTA_TYMSAC.xlsx (fuente autoritativa del usuario). Tabla propia para que
+    sobreviva a las recargas de vigilancia (que borran y recrean sus filas)."""
+    __tablename__ = "vehicle_estado_oficial"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    plate: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    estado: Mapped[str | None] = mapped_column(String, nullable=True)   # Operativa / Inoperativa
+    fuente: Mapped[str | None] = mapped_column(String, nullable=True)   # hoja de origen
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)

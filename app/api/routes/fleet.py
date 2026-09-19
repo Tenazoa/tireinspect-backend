@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia, VehicleEstadoOficial
 
 
 def _audit(db, inspector, action, target, detail):
@@ -1194,11 +1194,21 @@ _DET_BRAND_PREFIX = [
 ]
 
 
+# Overrides por MODELO: un modelo pertenece a UNA sola marca; gana incluso sobre
+# la marca que traiga SOLOMON. Validado contra los Excel de rendimiento del usuario.
+_DET_MODEL_BRAND = {
+    "HF668": "SUNFULL",   # SOLOMON lo trae HIFLY/VARIOS, es SUNFULL
+    "Y205": "DURATURN",   # SOLOMON lo trae HIFLY, es DURATURN
+}
+
+
 def _det_brand(modelo, marca):
+    mod = (modelo or "").strip().upper()
+    if mod in _DET_MODEL_BRAND:      # el modelo manda sobre la marca del sistema
+        return _DET_MODEL_BRAND[mod]
     m = (marca or "").strip()
     if m and m.upper() != "VARIOS":
         return m
-    mod = (modelo or "").strip().upper()
     for pref, mk in _DET_BRAND_PREFIX:
         if mod.startswith(pref):
             return mk
@@ -2221,6 +2231,58 @@ async def upload_vigilancia(
     return {"ok": True, "count": count}
 
 
+@router.post("/upload-estado-oficial")
+async def upload_estado_oficial(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Carga LISTA_TYMSAC.xlsx (hojas con PLACA + ESTADO). Normaliza a
+    Operativa/Inoperativa y lo guarda por placa (fuente oficial del usuario)."""
+    import pandas as pd
+    cid = inspector.company_id
+    raw = await file.read()
+    try:
+        xls = pd.ExcelFile(io.BytesIO(raw))
+    except Exception as e:
+        raise HTTPException(400, f"No pude leer el Excel: {e}")
+
+    def _norm_estado(v):
+        s = str(v or "").strip().upper()
+        if s.startswith("OPERATIV") or s.startswith("HABILITAD"):
+            return "Operativa"
+        if s.startswith("INOPERATIV") or s.startswith("INHABILITAD") or s.startswith("NO "):
+            return "Inoperativa"
+        return None
+
+    encontrados = {}   # plate -> (estado, hoja)
+    for hoja in xls.sheet_names:
+        try:
+            df = xls.parse(hoja, dtype=str).fillna("")
+        except Exception:
+            continue
+        cols = {str(c).strip().lower(): c for c in df.columns}
+        c_pla = next((cols[k] for k in cols if "placa" in k), None)
+        c_est = next((cols[k] for k in cols if "estado" in k), None)
+        if not (c_pla and c_est):
+            continue
+        for _, r in df.iterrows():
+            plate = str(r[c_pla]).strip().upper().replace(" ", "").replace("-", "")
+            est = _norm_estado(r[c_est])
+            if plate and est:
+                encontrados[plate] = (est, hoja)
+
+    if not encontrados:
+        raise HTTPException(400, "No encontré columnas PLACA + ESTADO con valores válidos en ninguna hoja.")
+
+    db.query(VehicleEstadoOficial).filter(VehicleEstadoOficial.company_id == cid).delete()
+    for plate, (est, hoja) in encontrados.items():
+        db.add(VehicleEstadoOficial(company_id=cid, plate=plate, estado=est, fuente=str(hoja)[:40]))
+    db.commit()
+    _audit(db, inspector, "cargar-estado-oficial", file.filename or "archivo", f"{len(encontrados)} placas")
+    return {"ok": True, "count": len(encontrados)}
+
+
 @router.get("/aprovechables")
 def get_aprovechables(
     meses: int = 6,
@@ -2297,6 +2359,8 @@ def get_aprovechables(
 
     # vigilancia por placa
     vig = {v.plate: v for v in db.query(VehicleVigilancia).filter(VehicleVigilancia.company_id == cid).all()}
+    # estado oficial (operativa/inoperativa) del Excel manual
+    estados = {e.plate: e.estado for e in db.query(VehicleEstadoOficial).filter(VehicleEstadoOficial.company_id == cid).all()}
 
     def pdate(s):
         return _pdate(s) if s else None
@@ -2350,6 +2414,7 @@ def get_aprovechables(
             "plate": plate,
             "base": (v.base if v else None) or "Sin base",
             "marca": (v.marca if v else None) or "—",
+            "estadoOficial": estados.get(plate),   # Operativa / Inoperativa (Excel) o None
             "tipoUnidad": "Tracto" if tu == "TRACTO" else "Carreta",
             "tipoVehiculo": (v.tipo_vehiculo if v else None) or "—",
             "aro": cl["aro"],
@@ -2400,21 +2465,24 @@ def get_aprovechables(
             return "tres6"
         return "mas6"
     TIEMPO_ORDER = ["menos3", "tres6", "mas6", "sinRegistro"]
-    resumenTiempo = {k: {"unidades": 0, "llantasAprov": 0, "conLlantasBuenas": 0}
-                     for k in TIEMPO_ORDER}
+    def _tiempo_vacio():
+        return {k: {"unidades": 0, "llantasAprov": 0, "conLlantasBuenas": 0} for k in TIEMPO_ORDER}
+    resumenTiempo = _tiempo_vacio()
+    resumenTiempoPorBase = defaultdict(_tiempo_vacio)
     for it in items:
         bk = _bucket(it["diasSinProgramar"])
-        rt = resumenTiempo[bk]
-        rt["unidades"] += 1
-        rt["llantasAprov"] += it["llantasAprov"]
-        if it["llantasAprov"] > 0:
-            rt["conLlantasBuenas"] += 1
+        for tgt in (resumenTiempo[bk], resumenTiempoPorBase[it["base"]][bk]):
+            tgt["unidades"] += 1
+            tgt["llantasAprov"] += it["llantasAprov"]
+            if it["llantasAprov"] > 0:
+                tgt["conLlantasBuenas"] += 1
 
     items.sort(key=lambda x: (x["base"], -(x["diasSinProgramar"] or -1)))
     return {
         "meses": meses, "umbralMm": umbral, "aprovMm": APROV_MM,
         "resumenPorBase": {k: v for k, v in resumen.items()},
         "resumenTiempo": resumenTiempo,
+        "resumenTiempoPorBase": {k: v for k, v in resumenTiempoPorBase.items()},
         "aprovechables": aprovechables,
         "unidades": items,
     }
