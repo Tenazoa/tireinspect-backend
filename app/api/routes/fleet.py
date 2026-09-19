@@ -2359,8 +2359,21 @@ def get_aprovechables(
 
     # vigilancia por placa
     vig = {v.plate: v for v in db.query(VehicleVigilancia).filter(VehicleVigilancia.company_id == cid).all()}
-    # estado oficial (operativa/inoperativa) del Excel manual
+    # estado oficial (operativa/inoperativa): Excel manual (autoritativo) y, para
+    # las unidades que no estén en el Excel (p.ej. tractos), respaldo de SOLOMON.
     estados = {e.plate: e.estado for e in db.query(VehicleEstadoOficial).filter(VehicleEstadoOficial.company_id == cid).all()}
+    estado_solomon = {
+        vi.plate: ("Operativa" if vi.activo else "Inoperativa")
+        for vi in db.query(VehicleInfo).filter(VehicleInfo.company_id == cid).all()
+        if vi.activo is not None
+    }
+
+    def _estado(plate):
+        if plate in estados:
+            return estados[plate], "Excel"
+        if plate in estado_solomon:
+            return estado_solomon[plate], "SOLOMON"
+        return None, None
 
     def pdate(s):
         return _pdate(s) if s else None
@@ -2414,7 +2427,8 @@ def get_aprovechables(
             "plate": plate,
             "base": (v.base if v else None) or "Sin base",
             "marca": (v.marca if v else None) or "—",
-            "estadoOficial": estados.get(plate),   # Operativa / Inoperativa (Excel) o None
+            "estadoOficial": _estado(plate)[0],    # Operativa / Inoperativa (Excel o SOLOMON)
+            "estadoFuente": _estado(plate)[1],     # "Excel" / "SOLOMON" / None
             "tipoUnidad": "Tracto" if tu == "TRACTO" else "Carreta",
             "tipoVehiculo": (v.tipo_vehiculo if v else None) or "—",
             "aro": cl["aro"],
