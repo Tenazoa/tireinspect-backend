@@ -331,6 +331,7 @@ class ReencaucheTire(Base):
     reencauchadora: Mapped[str | None] = mapped_column(String, nullable=True)  # RELINO / CARRANZA / …
     unidad_origen: Mapped[str | None] = mapped_column(String, nullable=True)
     vida: Mapped[str | None] = mapped_column(String, nullable=True)
+    km_recorrido: Mapped[float | None] = mapped_column(Float, nullable=True)  # km real de la llanta
     estado: Mapped[str] = mapped_column(String, nullable=False, default="en_base")  # en_base/entregada/reencauchada
     notas: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)

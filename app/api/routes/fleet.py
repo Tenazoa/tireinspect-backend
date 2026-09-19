@@ -2234,12 +2234,21 @@ async def upload_vigilancia(
 REENCA_ESTADOS = ("en_base", "entregada", "reencauchada")
 
 
+def _condicion_from_vida(vida, fallback=None):
+    v = str(vida or "").strip().upper()
+    if v.endswith("R"):
+        return "Reencauchada"
+    if v.endswith("V"):
+        return "Original"
+    return fallback or "Original"
+
+
 def _reenca_dict(r: ReencaucheTire):
     return {
         "id": r.id, "code": r.code, "marca": r.marca, "modelo": r.modelo,
-        "medida": r.medida, "condicion": r.condicion, "base": r.base,
-        "reencauchadora": r.reencauchadora, "unidadOrigen": r.unidad_origen,
-        "vida": r.vida, "estado": r.estado, "notas": r.notas,
+        "medida": r.medida, "condicion": _condicion_from_vida(r.vida, r.condicion),
+        "base": r.base, "reencauchadora": r.reencauchadora, "unidadOrigen": r.unidad_origen,
+        "vida": r.vida, "kmRecorrido": r.km_recorrido, "estado": r.estado, "notas": r.notas,
         "fecha": r.created_at.isoformat() if r.created_at else None,
     }
 
@@ -2296,10 +2305,18 @@ def reencauche_add(
             data = d.data or {}
             det[k] = {
                 "marca": d.brand, "modelo": data.get("Modelo") or data.get("modelo"),
-                "medida": d.size, "condicion": data.get("Tipo") or data.get("Condicion"),
-                "vida": data.get("nCicloVida") or data.get("Vida"),
-                "unidad": data.get("Placa") or data.get("placa"),
+                "medida": d.size, "vida": data.get("nCicloVida") or data.get("Vida"),
+                "unidad": (data.get("Placa") or data.get("placa") or "").strip() or None,
             }
+    # km real por llanta (suma de km de sus vidas) desde LL_KmVida
+    km_by_code = {}
+    for k in db.query(TireKmVida).filter(TireKmVida.company_id == cid).all():
+        code = (k.code or "").strip().upper()
+        km_by_code[code] = km_by_code.get(code, 0) + (k.km_vida or 0)
+    # base por placa (para autodetectar la base de la llanta según su unidad de origen)
+    base_por_placa = {v.plate: v.base for v in db.query(VehicleVigilancia)
+                      .filter(VehicleVigilancia.company_id == cid).all() if v.base}
+
     existentes = {(r.code or "").upper() for r in db.query(ReencaucheTire)
                   .filter(ReencaucheTire.company_id == cid).all()}
     added, skipped, nofound = [], [], []
@@ -2310,13 +2327,15 @@ def reencauche_add(
         info = det.get(cu, {})
         if not info:
             nofound.append(c)
-        cond = info.get("condicion")
         vida = str(info.get("vida") or "")
-        cond_txt = "Reencauchada" if (vida and vida.upper().endswith("R")) else (cond or "Original")
+        placa = info.get("unidad")
+        # base: la de la unidad de origen (SOLOMON) y, si no se conoce, la elegida
+        base_final = base_por_placa.get(placa) or base
         db.add(ReencaucheTire(
             company_id=cid, code=c, marca=info.get("marca"), modelo=info.get("modelo"),
-            medida=info.get("medida"), condicion=cond_txt, base=base, reencauchadora=reenca,
-            unidad_origen=info.get("unidad"), vida=vida or None, estado=estado,
+            medida=info.get("medida"), condicion=_condicion_from_vida(vida), base=base_final,
+            reencauchadora=reenca, unidad_origen=placa, vida=vida or None,
+            km_recorrido=(km_by_code.get(cu) or None), estado=estado,
         ))
         existentes.add(cu)
         added.append(c)
