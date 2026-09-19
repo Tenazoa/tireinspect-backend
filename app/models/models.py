@@ -316,6 +316,27 @@ class VehicleVigilancia(Base):
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
 
 
+class ReencaucheTire(Base):
+    """Gestión de llantas para reencauche: las que están en base para llevar a
+    reencauchar, las entregadas a la reencauchadora y las que ya volvieron."""
+    __tablename__ = "reencauche_tires"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    code: Mapped[str] = mapped_column(String, nullable=False, index=True)   # nro de llanta
+    marca: Mapped[str | None] = mapped_column(String, nullable=True)
+    modelo: Mapped[str | None] = mapped_column(String, nullable=True)
+    medida: Mapped[str | None] = mapped_column(String, nullable=True)
+    condicion: Mapped[str | None] = mapped_column(String, nullable=True)    # Original / Reencauchada
+    base: Mapped[str | None] = mapped_column(String, nullable=True)         # Lima / Chiclayo
+    reencauchadora: Mapped[str | None] = mapped_column(String, nullable=True)  # RELINO / CARRANZA / …
+    unidad_origen: Mapped[str | None] = mapped_column(String, nullable=True)
+    vida: Mapped[str | None] = mapped_column(String, nullable=True)
+    estado: Mapped[str] = mapped_column(String, nullable=False, default="en_base")  # en_base/entregada/reencauchada
+    notas: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
 class VehicleEstadoOficial(Base):
     """Estado oficial operativa/inoperativa de cada placa según el Excel manual
     LISTA_TYMSAC.xlsx (fuente autoritativa del usuario). Tabla propia para que

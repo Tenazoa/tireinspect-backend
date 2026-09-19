@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia, VehicleEstadoOficial
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia, VehicleEstadoOficial, ReencaucheTire
 
 
 def _audit(db, inspector, action, target, detail):
@@ -2229,6 +2229,134 @@ async def upload_vigilancia(
     db.commit()
     _audit(db, inspector, "cargar-vigilancia", file.filename or "archivo", f"{count} placas")
     return {"ok": True, "count": count}
+
+
+REENCA_ESTADOS = ("en_base", "entregada", "reencauchada")
+
+
+def _reenca_dict(r: ReencaucheTire):
+    return {
+        "id": r.id, "code": r.code, "marca": r.marca, "modelo": r.modelo,
+        "medida": r.medida, "condicion": r.condicion, "base": r.base,
+        "reencauchadora": r.reencauchadora, "unidadOrigen": r.unidad_origen,
+        "vida": r.vida, "estado": r.estado, "notas": r.notas,
+        "fecha": r.created_at.isoformat() if r.created_at else None,
+    }
+
+
+@router.get("/reencauche")
+def reencauche_list(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Lista de llantas en el flujo de reencauche + resúmenes por estado y base."""
+    from collections import Counter
+    rows = (db.query(ReencaucheTire)
+            .filter(ReencaucheTire.company_id == inspector.company_id)
+            .order_by(ReencaucheTire.created_at.desc()).all())
+    items = [_reenca_dict(r) for r in rows]
+    por_estado = Counter(r.estado or "en_base" for r in rows)
+    por_base = Counter((r.base or "—") for r in rows)
+    return {
+        "items": items,
+        "total": len(items),
+        "porEstado": {k: por_estado.get(k, 0) for k in REENCA_ESTADOS},
+        "porBase": dict(por_base),
+    }
+
+
+@router.post("/reencauche/add")
+def reencauche_add(
+    payload: dict,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Agrega llantas por CÓDIGO. Autocompleta marca/modelo/medida/condición
+    desde el Detalle de Llantas. `codes` puede venir como lista o texto separado
+    por comas/espacios/saltos. Evita duplicados (mismo código en el mismo estado)."""
+    cid = inspector.company_id
+    raw = payload.get("codes", [])
+    base = (payload.get("base") or "").strip() or None
+    estado = (payload.get("estado") or "en_base").strip()
+    reenca = (payload.get("reencauchadora") or "").strip() or None
+    if estado not in REENCA_ESTADOS:
+        estado = "en_base"
+    if isinstance(raw, str):
+        codes = [c.strip() for c in re.split(r"[\s,;]+", raw) if c.strip()]
+    else:
+        codes = [str(c).strip() for c in raw if str(c).strip()]
+    if not codes:
+        raise HTTPException(400, "No enviaste códigos.")
+
+    # catálogo por código desde el Detalle (marca ya resuelta)
+    det = {}
+    for d in db.query(TireDetalle).filter(TireDetalle.company_id == cid).all():
+        k = (d.code or "").strip().upper()
+        if k and k not in det:
+            data = d.data or {}
+            det[k] = {
+                "marca": d.brand, "modelo": data.get("Modelo") or data.get("modelo"),
+                "medida": d.size, "condicion": data.get("Tipo") or data.get("Condicion"),
+                "vida": data.get("nCicloVida") or data.get("Vida"),
+                "unidad": data.get("Placa") or data.get("placa"),
+            }
+    existentes = {(r.code or "").upper() for r in db.query(ReencaucheTire)
+                  .filter(ReencaucheTire.company_id == cid).all()}
+    added, skipped, nofound = [], [], []
+    for c in codes:
+        cu = c.upper()
+        if cu in existentes:
+            skipped.append(c); continue
+        info = det.get(cu, {})
+        if not info:
+            nofound.append(c)
+        cond = info.get("condicion")
+        vida = str(info.get("vida") or "")
+        cond_txt = "Reencauchada" if (vida and vida.upper().endswith("R")) else (cond or "Original")
+        db.add(ReencaucheTire(
+            company_id=cid, code=c, marca=info.get("marca"), modelo=info.get("modelo"),
+            medida=info.get("medida"), condicion=cond_txt, base=base, reencauchadora=reenca,
+            unidad_origen=info.get("unidad"), vida=vida or None, estado=estado,
+        ))
+        existentes.add(cu)
+        added.append(c)
+    db.commit()
+    _audit(db, inspector, "reencauche-add", ",".join(codes)[:120], f"{len(added)} agregadas")
+    return {"ok": True, "added": added, "skipped": skipped, "sinDatos": nofound}
+
+
+@router.patch("/reencauche/{rid}")
+def reencauche_update(
+    rid: str, payload: dict,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Actualiza estado/base/reencauchadora/notas de una llanta."""
+    r = (db.query(ReencaucheTire)
+         .filter(ReencaucheTire.company_id == inspector.company_id, ReencaucheTire.id == rid).first())
+    if not r:
+        raise HTTPException(404, "No existe.")
+    if "estado" in payload and payload["estado"] in REENCA_ESTADOS:
+        r.estado = payload["estado"]
+    for campo, attr in [("base", "base"), ("reencauchadora", "reencauchadora"), ("notas", "notas")]:
+        if campo in payload:
+            setattr(r, attr, (payload[campo] or None))
+    db.commit()
+    return {"ok": True, "item": _reenca_dict(r)}
+
+
+@router.delete("/reencauche/{rid}")
+def reencauche_delete(
+    rid: str,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    r = (db.query(ReencaucheTire)
+         .filter(ReencaucheTire.company_id == inspector.company_id, ReencaucheTire.id == rid).first())
+    if not r:
+        raise HTTPException(404, "No existe.")
+    db.delete(r); db.commit()
+    return {"ok": True}
 
 
 @router.post("/upload-estado-oficial")
