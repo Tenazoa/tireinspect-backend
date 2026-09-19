@@ -2233,6 +2233,41 @@ async def upload_vigilancia(
 
 REENCA_ESTADOS = ("en_base", "entregada", "reencauchada")
 
+# Cuadro de precios de llanta NUEVA en SOLES por (marca, modelo) — hoja PRECIOS
+# del Excel de reencauche del usuario. Para calcular Costo y CPK.
+PRECIO_NUEVA = {
+    ("ANSU", "AL707"): 629.53, ("ANSU", "BYS98"): 629.53,
+    ("CONTINENTAL", "HDR2+"): 1260, ("CONTINENTAL", "HSR3"): 1260,
+    ("DURATURN", "Y209"): 831.33, ("DURATURN", "Y601"): 831.33, ("DURATURN", "Y205"): 661.56,
+    ("DURATURN", "Y126"): 807.13, ("DURATURN", "Y237"): 819.15,
+    ("FENIXWAY", "VALOR 96"): 635.97, ("FENIXWAY", "FLAMA 89"): 635.97,
+    ("FORLANDER", "FR969"): 701, ("GITI", "GAM839"): 661.56,
+    ("GOODYEAR", "G668"): 1457.4, ("HIFLY", "HH102"): 661.56, ("HIFLY", "Y205"): 661.56,
+    ("MICHELIN", "X MULTI D"): 1560, ("PIRELLI", "FR01"): 1220,
+    ("STEELMARK", "AHS"): 648.13, ("SUNFULL", "HF668"): 814.79,
+    ("TERRAKING", "HS-268"): 648.13, ("CARGOPOWER", "CG108"): 555.51, ("CARGOPOWER", "CG108+"): 596.44,
+    ("DOUBLESTAR", "DS224252"): 1586.11,
+}
+_PRECIO_PROMEDIO = 794.10   # promedio del cuadro (fallback si no hay marca/modelo)
+
+
+def _norm_marca(m):
+    return "".join(ch for ch in str(m or "").upper() if ch.isalnum())
+
+
+def _precio_nueva(marca, modelo):
+    """Precio de llanta nueva (S/.) por marca+modelo; cae a promedio por marca,
+    y finalmente al promedio general del cuadro."""
+    mk = _norm_marca(marca)
+    md = str(modelo or "").upper().strip()
+    for (m, mo), p in PRECIO_NUEVA.items():
+        if _norm_marca(m) == mk and mo.upper() == md:
+            return p
+    porm = [p for (m, _mo), p in PRECIO_NUEVA.items() if _norm_marca(m) == mk]
+    if porm:
+        return round(sum(porm) / len(porm), 2)
+    return _PRECIO_PROMEDIO
+
 
 def _condicion_from_vida(vida, fallback=None):
     v = str(vida or "").strip().upper()
@@ -2284,6 +2319,10 @@ def reencauche_list(
         it["estandar"] = est
         it["rendimientoPct"] = round(km / est * 100, 1) if (est and km) else None
         it["condicionLlanta"] = "REENCAUCHE"   # todas las de esta lista van a reencauche
+        # costo de la llanta nueva (cuadro de precios) y CPK = costo / km total
+        costo = _precio_nueva(r.marca, r.modelo)
+        it["costo"] = costo
+        it["cpk"] = round(costo / km, 4) if (costo and km) else None
         items.append(it)
 
     por_estado = Counter(r.estado or "en_base" for r in rows)
