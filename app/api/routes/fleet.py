@@ -2357,9 +2357,15 @@ def reencauche_update(
         raise HTTPException(404, "No existe.")
     if "estado" in payload and payload["estado"] in REENCA_ESTADOS:
         r.estado = payload["estado"]
-    for campo, attr in [("base", "base"), ("reencauchadora", "reencauchadora"), ("notas", "notas")]:
+    for campo, attr in [("base", "base"), ("reencauchadora", "reencauchadora"),
+                        ("notas", "notas"), ("unidadOrigen", "unidad_origen")]:
         if campo in payload:
             setattr(r, attr, (payload[campo] or None))
+    if "kmRecorrido" in payload:
+        try:
+            r.km_recorrido = float(payload["kmRecorrido"]) if payload["kmRecorrido"] is not None else None
+        except (TypeError, ValueError):
+            pass
     db.commit()
     return {"ok": True, "item": _reenca_dict(r)}
 
