@@ -96,6 +96,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "X-Descargo-Monto", "X-Descargo-Causa"],
 )
 
 app.include_router(auth.router, prefix="/api/v1")

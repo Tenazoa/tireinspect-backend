@@ -182,6 +182,110 @@ def dataset_stats(
     }
 
 
+# ── Asistente IA de la flota (chat) ─────────────────────────────────────────
+
+class ChatMsg(BaseModel):
+    role: str
+    content: str
+
+
+class ChatIn(BaseModel):
+    messages: list[ChatMsg]
+
+
+@router.post("/chat")
+def fleet_chat(body: ChatIn, db: Session = Depends(get_db),
+               inspector: Inspector = Depends(get_current_inspector)):
+    """Preguntas en lenguaje natural sobre la flota. Claude consulta la BD con
+    herramientas de solo lectura filtradas por la empresa del usuario."""
+    from ...services.ai.fleet_chat import responder
+    if not body.messages or body.messages[-1].role != "user":
+        raise HTTPException(400, "El último mensaje debe ser la pregunta del usuario")
+    try:
+        return responder(db, inspector.company_id, [m.model_dump() for m in body.messages])
+    except Exception as e:
+        raise HTTPException(502, f"No se pudo consultar a la IA: {str(e)[:200]}")
+
+
+# ── Foto de llanta dada de baja → causa del daño ───────────────────────────
+
+@router.post("/damage-cause")
+async def damage_cause(file: UploadFile = File(...), contexto: str = Form(default=""),
+                       _: Inspector = Depends(get_current_inspector)):
+    from ...services.ai.descargo import clasificar_dano
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "Solo se permiten imágenes")
+    foto = await file.read()
+    if len(foto) < 1000:
+        raise HTTPException(400, "Imagen demasiado pequeña o vacía")
+    try:
+        return clasificar_dano(foto, contexto)
+    except Exception as e:
+        raise HTTPException(502, f"No se pudo analizar la foto: {str(e)[:200]}")
+
+
+@router.get("/llanta-info")
+def llanta_info(codigo: str, db: Session = Depends(get_db),
+                inspector: Inspector = Depends(get_current_inspector)):
+    """Autollenado del formulario de descargo por código de llanta."""
+    from ...models.models import TireStock, TireDetalle
+    cid, cod = inspector.company_id, codigo.strip()
+    out = {"codigo": cod, "encontrada": False}
+    s = db.query(TireSpec).filter(TireSpec.company_id == cid, TireSpec.code == cod).first()
+    st = None if s else db.query(TireStock).filter(TireStock.company_id == cid, TireStock.code == cod).first()
+    src = s or st
+    if src:
+        out.update(encontrada=True, marca=src.brand, modelo=src.model, medida=src.size, vida=src.life,
+                   placa=src.plate, km_recorrido=src.km_life or src.km_total,
+                   posicion=getattr(s, "position", None) if s else None)
+    det = db.query(TireDetalle).filter(TireDetalle.company_id == cid, TireDetalle.code == cod).all()
+    for d in det:
+        dd = d.data or {}
+        if dd.get("CocadaPrimera") and not out.get("cocada_orig"):
+            try:
+                out["cocada_orig"] = float(dd["CocadaPrimera"])
+            except Exception:
+                pass
+        if not out.get("encontrada"):
+            out.update(encontrada=True, marca=d.brand, medida=d.size, placa=d.plate,
+                       modelo=dd.get("Modelo"), vida=dd.get("nCicloVida"))
+    return out
+
+
+@router.post("/descargo")
+async def descargo(
+    codigo: str = Form(...), placa: str = Form(default=""), posicion: str = Form(default=""),
+    conductor: str = Form(default=""), fecha: str = Form(default=""), lugar: str = Form(default=""),
+    incidente: str = Form(default=""), marca: str = Form(default=""), modelo: str = Form(default=""),
+    medida: str = Form(default=""), vida: str = Form(default=""), km_recorrido: str = Form(default=""),
+    costo: float = Form(...), cocada_orig: float = Form(...), cocada_retiro: float = Form(...),
+    file: Optional[UploadFile] = File(default=None),
+    _: Inspector = Depends(get_current_inspector),
+):
+    """Genera el Informe Técnico de Descargo (Word). Monto = costo × cocada_retiro / cocada_orig."""
+    from fastapi.responses import Response
+    from urllib.parse import quote
+    from ...services.ai.descargo import generar_descargo
+    if cocada_orig <= 0 or cocada_retiro < 0 or cocada_retiro > cocada_orig or costo <= 0:
+        raise HTTPException(400, "Revisa costo y cocadas (la cocada al retiro no puede superar la original)")
+    foto = await file.read() if file is not None else None
+    datos = dict(codigo=codigo, placa=placa, posicion=posicion, conductor=conductor, fecha=fecha, lugar=lugar,
+                 incidente=incidente, marca=marca, modelo=modelo, medida=medida, vida=vida,
+                 km_recorrido=km_recorrido, costo=costo, cocada_orig=cocada_orig, cocada_retiro=cocada_retiro)
+    try:
+        docx, res = generar_descargo(datos, foto if foto and len(foto) > 1000 else None)
+    except Exception as e:
+        raise HTTPException(502, f"No se pudo generar el descargo: {str(e)[:200]}")
+    nombre = f"INFORME_DESCARGO_{(placa or 'SIN-PLACA').replace(' ', '')}_LLANTA_{codigo}.docx"
+    return Response(
+        content=docx,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(nombre)}",
+                 "X-Descargo-Monto": str(res["monto"]),
+                 "X-Descargo-Causa": quote((res.get("dano") or {}).get("causa") or "")},
+    )
+
+
 # ── Fase 3: Medición con objeto de referencia ───────────────────────────────
 
 class ReferenceMeasurementOut(BaseModel):
