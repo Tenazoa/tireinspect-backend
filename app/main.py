@@ -32,6 +32,16 @@ def _migrate():
         stmts.append("ALTER TABLE vehicle_vigilancia ADD COLUMN IF NOT EXISTS tipo_vehiculo VARCHAR")
         stmts.append("ALTER TABLE vehicle_vigilancia ADD COLUMN IF NOT EXISTS marca VARCHAR")
         stmts.append("ALTER TABLE reencauche_tires ADD COLUMN IF NOT EXISTS km_recorrido DOUBLE PRECISION")
+        # Seguridad: activar Row Level Security en TODAS las tablas públicas
+        # (cierra el aviso rls_disabled_in_public de Supabase para tablas nuevas).
+        # El backend se conecta como dueño/postgres, que ignora RLS, así que no
+        # afecta su funcionamiento; solo bloquea el acceso anónimo por la API.
+        stmts.append(
+            "DO $$ DECLARE r record; BEGIN "
+            "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' LOOP "
+            "EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY;', r.tablename); "
+            "END LOOP; END $$;"
+        )
     else:  # sqlite u otros: intentar y tolerar si ya existe
         stmts.append("ALTER TABLE vehicles ADD COLUMN active BOOLEAN DEFAULT 1")
         stmts.append("ALTER TABLE tire_specs ADD COLUMN km_total FLOAT")
