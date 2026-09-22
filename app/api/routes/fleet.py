@@ -3629,15 +3629,44 @@ def get_fleet_tires(
                 det_fecha[(r.code or "").strip().upper()] = dd
                 break
 
+    # Última INSPECCIÓN de la app por posición: reinicia el ciclo de desgaste
+    # (la regla del usuario: hecha la inspección, el desgaste corre desde cero).
+    insp_by_pos = {}
+    q_insp = (db.query(TireInspection.position, TireInspection.tread_depth_inner,
+                       TireInspection.tread_depth_center, TireInspection.tread_depth_outer,
+                       Inspection.created_at)
+              .join(Inspection, TireInspection.inspection_id == Inspection.id)
+              .join(Vehicle, Inspection.vehicle_id == Vehicle.id)
+              .filter(Vehicle.plate == p))
+    for pos, t_in, t_ce, t_ou, created in q_insp:
+        if not created:
+            continue
+        dd = created.date() if hasattr(created, "date") else created
+        depths = [x for x in (t_in, t_ce, t_ou) if x is not None]
+        coc = min(depths) if depths else None
+        cur = insp_by_pos.get(pos)
+        if cur is None or dd > cur[0]:
+            insp_by_pos[pos] = (dd, coc)
+
     out = []
     for s in specs:
         code = (s.code or "").strip().upper()
-        base = s.last_depth_mm
-        ref = det_fecha.get(code)
-        med = last_med.get(code)
-        if med:
-            base = med[1]
-            ref = med[0] if (ref is None or med[0] > ref) else ref
+        # Candidatos de referencia (fecha, cocada). Gana el MÁS RECIENTE:
+        # inspección de la app, medición de SOLOMON (LLMedida) o fecha del Detalle.
+        cands = []
+        if det_fecha.get(code):
+            cands.append((det_fecha[code], s.last_depth_mm))
+        if last_med.get(code):
+            cands.append(last_med[code])                       # (fecha, cocada)
+        ip = insp_by_pos.get(s.position)
+        if ip and ip[0]:
+            cands.append((ip[0], ip[1] if ip[1] is not None else s.last_depth_mm))
+        if cands:
+            ref, base = max(cands, key=lambda c: c[0])
+            if base is None:
+                base = s.last_depth_mm
+        else:
+            ref, base = None, s.last_depth_mm
         km = km_desde(ref)
         proj = base
         if base is not None and km is not None:
