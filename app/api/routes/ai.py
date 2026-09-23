@@ -249,40 +249,79 @@ def llanta_info(codigo: str, db: Session = Depends(get_db),
         if not out.get("encontrada"):
             out.update(encontrada=True, marca=d.brand, medida=d.size, placa=d.plate,
                        modelo=dd.get("Modelo"), vida=dd.get("nCicloVida"))
+    if out.get("encontrada"):
+        from .fleet import _precio_nueva, _condicion_from_vida
+        out["costo_ref"] = _precio_nueva(out.get("marca"), out.get("modelo"))   # precio de lista, editable
+        out["condicion"] = "Neumático reencauchado" if _condicion_from_vida(out.get("vida")) == "Reencauchada" else "Neumático nuevo"
     return out
+
+
+@router.post("/read-code")
+async def read_code(file: UploadFile = File(...), db: Session = Depends(get_db),
+                    inspector: Inspector = Depends(get_current_inspector)):
+    """Foto del flanco -> la IA lee el código de la llanta y, si existe en SOLOMON, trae sus datos."""
+    from ...services.ai.descargo import leer_codigo
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "Solo se permiten imágenes")
+    foto = await file.read()
+    if len(foto) < 1000:
+        raise HTTPException(400, "Imagen demasiado pequeña o vacía")
+    try:
+        r = leer_codigo(foto)
+    except Exception as e:
+        raise HTTPException(502, f"No se pudo leer el código: {str(e)[:200]}")
+    if r.get("codigo"):
+        r["solomon"] = llanta_info(r["codigo"], db, inspector)
+    return r
 
 
 @router.post("/descargo")
 async def descargo(
-    codigo: str = Form(...), placa: str = Form(default=""), posicion: str = Form(default=""),
-    conductor: str = Form(default=""), fecha: str = Form(default=""), lugar: str = Form(default=""),
-    incidente: str = Form(default=""), marca: str = Form(default=""), modelo: str = Form(default=""),
-    medida: str = Form(default=""), vida: str = Form(default=""), km_recorrido: str = Form(default=""),
-    costo: float = Form(...), cocada_orig: float = Form(...), cocada_retiro: float = Form(...),
-    file: Optional[UploadFile] = File(default=None),
+    datos: str = Form(...),                                  # JSON con el caso y la lista de llantas
+    fotos: list[UploadFile] = File(default=[]),
+    tipos: list[str] = Form(default=[]),                     # tipo de cada foto (mismo orden)
+    leyendas: list[str] = Form(default=[]),                  # leyenda de cada foto (opcional)
     _: Inspector = Depends(get_current_inspector),
 ):
-    """Genera el Informe Técnico de Descargo (Word). Monto = costo × cocada_retiro / cocada_orig."""
+    """Informe Técnico de Descargo en Word con el formato TYMSAC (varias llantas y fotos).
+    Monto por llanta = costo ÷ cocada original × altura de salida (lo calcula el código)."""
+    import json as _json
     from fastapi.responses import Response
     from urllib.parse import quote
     from ...services.ai.descargo import generar_descargo
-    if cocada_orig <= 0 or cocada_retiro < 0 or cocada_retiro > cocada_orig or costo <= 0:
-        raise HTTPException(400, "Revisa costo y cocadas (la cocada al retiro no puede superar la original)")
-    foto = await file.read() if file is not None else None
-    datos = dict(codigo=codigo, placa=placa, posicion=posicion, conductor=conductor, fecha=fecha, lugar=lugar,
-                 incidente=incidente, marca=marca, modelo=modelo, medida=medida, vida=vida,
-                 km_recorrido=km_recorrido, costo=costo, cocada_orig=cocada_orig, cocada_retiro=cocada_retiro)
     try:
-        docx, res = generar_descargo(datos, foto if foto and len(foto) > 1000 else None)
+        d = _json.loads(datos)
+    except Exception:
+        raise HTTPException(400, "Datos inválidos")
+    lls = d.get("llantas") or []
+    if not lls:
+        raise HTTPException(400, "Agrega al menos una llanta")
+    for x in lls:
+        try:
+            co, cr, cs = float(x["cocada_orig"]), float(x["cocada_retiro"]), float(x["costo"])
+        except Exception:
+            raise HTTPException(400, f"Completa cocada original, altura de salida y costo de la llanta {x.get('codigo') or ''}")
+        if co <= 0 or cr < 0 or cr > co or cs <= 0:
+            raise HTTPException(400, f"Revisa la llanta {x.get('codigo') or ''}: la altura de salida no puede superar la cocada original")
+    fs = []
+    for k, f in enumerate(fotos[:12]):
+        b = await f.read()
+        if b and len(b) > 1000:
+            fs.append({"bytes": b, "tipo": tipos[k] if k < len(tipos) else "", "leyenda": leyendas[k] if k < len(leyendas) else ""})
+    try:
+        docx, res = generar_descargo(d, fs)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(502, f"No se pudo generar el descargo: {str(e)[:200]}")
-    nombre = f"INFORME_DESCARGO_{(placa or 'SIN-PLACA').replace(' ', '')}_LLANTA_{codigo}.docx"
+    cods = "_".join(str(x.get("codigo") or "") for x in lls)[:40]
+    nombre = f"INFORME_DESCARGO_{(d.get('placa') or 'SIN-PLACA').replace(' ', '')}_LLANTAS_{cods}.docx"
     return Response(
         content=docx,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(nombre)}",
                  "X-Descargo-Monto": str(res["monto"]),
-                 "X-Descargo-Causa": quote((res.get("dano") or {}).get("causa") or "")},
+                 "X-Descargo-Causa": quote(res.get("titulo") or "")},
     )
 
 
