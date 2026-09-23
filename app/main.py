@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from .core.config import settings
 from .core.database import Base, engine
 from .core.seed import seed_if_empty
-from .api.routes import auth, vehicles, inspections, photos, ai, fleet
+from .api.routes import auth, vehicles, inspections, photos, ai, fleet, gestion
 
 # Crear tablas al iniciar y sembrar datos demo si está vacía (útil en la nube).
 # Tolerante a fallos: si la BD está pausada/caída, la app igual arranca y responde
@@ -106,7 +106,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition", "X-Descargo-Monto", "X-Descargo-Causa"],
+    expose_headers=["Content-Disposition", "X-Descargo-Monto", "X-Descargo-Causa", "X-Descargo-Id"],
 )
 
 app.include_router(auth.router, prefix="/api/v1")
@@ -115,6 +115,7 @@ app.include_router(inspections.router, prefix="/api/v1")
 app.include_router(photos.router, prefix="/api/v1")
 app.include_router(ai.router, prefix="/api/v1")
 app.include_router(fleet.router, prefix="/api/v1")
+app.include_router(gestion.router, prefix="/api/v1")
 
 # Servir fotos subidas localmente
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")

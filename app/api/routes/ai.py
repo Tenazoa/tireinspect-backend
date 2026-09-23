@@ -281,14 +281,17 @@ async def descargo(
     fotos: list[UploadFile] = File(default=[]),
     tipos: list[str] = Form(default=[]),                     # tipo de cada foto (mismo orden)
     leyendas: list[str] = Form(default=[]),                  # leyenda de cada foto (opcional)
-    _: Inspector = Depends(get_current_inspector),
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
 ):
     """Informe Técnico de Descargo en Word con el formato TYMSAC (varias llantas y fotos).
     Monto por llanta = costo ÷ cocada original × altura de salida (lo calcula el código)."""
     import json as _json
     from fastapi.responses import Response
     from urllib.parse import quote
-    from ...services.ai.descargo import generar_descargo
+    import base64 as _b64
+    from ...services.ai.descargo import generar_descargo, firmar_word
+    from ...models.models import Descargo
     try:
         d = _json.loads(datos)
     except Exception:
@@ -314,6 +317,15 @@ async def descargo(
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(502, f"No se pudo generar el descargo: {str(e)[:200]}")
+    # guardar en el historial (Word sin firma; la firma del conductor se agrega luego)
+    reg = Descargo(numero=d.get("numero"), placa=(d.get("placa") or "").strip().upper() or None,
+                   conductor=(d.get("conductor") or "").strip() or None, titulo=res.get("titulo"),
+                   codigos=", ".join(str(x.get("codigo") or "") for x in lls), llantas=len(lls),
+                   monto=res["monto"], monto_igv=res["monto_igv"], datos=d,
+                   docx_b64=_b64.b64encode(docx).decode(), created_by=inspector.email,
+                   company_id=inspector.company_id)
+    db.add(reg); db.commit()
+    docx = firmar_word(docx, None)
     cods = "_".join(str(x.get("codigo") or "") for x in lls)[:40]
     nombre = f"INFORME_DESCARGO_{(d.get('placa') or 'SIN-PLACA').replace(' ', '')}_LLANTAS_{cods}.docx"
     return Response(
@@ -321,7 +333,8 @@ async def descargo(
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(nombre)}",
                  "X-Descargo-Monto": str(res["monto"]),
-                 "X-Descargo-Causa": quote(res.get("titulo") or "")},
+                 "X-Descargo-Causa": quote(res.get("titulo") or ""),
+                 "X-Descargo-Id": reg.id},
     )
 
 

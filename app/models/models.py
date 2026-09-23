@@ -349,3 +349,42 @@ class VehicleEstadoOficial(Base):
     estado: Mapped[str | None] = mapped_column(String, nullable=True)   # Operativa / Inoperativa
     fuente: Mapped[str | None] = mapped_column(String, nullable=True)   # hoja de origen
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
+class Descargo(Base):
+    """Informe Técnico de Descargo generado en la web: se guarda el Word, la firma
+    del conductor y el estado del descuento (generado → firmado → descontado)."""
+    __tablename__ = "descargos"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    numero: Mapped[str | None] = mapped_column(String, nullable=True)
+    placa: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    conductor: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    titulo: Mapped[str | None] = mapped_column(String, nullable=True)
+    codigos: Mapped[str | None] = mapped_column(String, nullable=True)       # "19076, 19072"
+    llantas: Mapped[int] = mapped_column(Integer, default=1)
+    monto: Mapped[float] = mapped_column(Float, default=0.0)                 # sin IGV
+    monto_igv: Mapped[float] = mapped_column(Float, default=0.0)
+    datos: Mapped[dict | None] = mapped_column(JSON, nullable=True)          # caso completo (sin fotos)
+    docx_b64: Mapped[str | None] = mapped_column(Text, nullable=True)        # Word sin firma
+    estado: Mapped[str] = mapped_column(String, default="generado")          # generado/firmado/descontado/anulado
+    firma_b64: Mapped[str | None] = mapped_column(Text, nullable=True)       # PNG de la firma del conductor
+    firmado_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    descontado_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    notas: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
+class AnaliticaSnapshot(Base):
+    """Análisis diario calculado en la PC por 11_generar_web.py (predicción, alertas,
+    reencauche, garantías, rotaciones, pedido, resumen gerencial) y subido por
+    subir_web.py. Una fila por empresa y parte."""
+    __tablename__ = "analitica_snapshot"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    parte: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    data: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)

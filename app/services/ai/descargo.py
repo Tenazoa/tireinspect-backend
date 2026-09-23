@@ -484,5 +484,44 @@ def _armar_word(d, llantas, fotos, t, total, total_igv, hoy) -> bytes:
     doc.add_paragraph("TYMSAC – Control y Supervisión de Neumáticos")
     doc.add_paragraph(f"{ciudad}, {_fecha_larga(hoy)}")
 
+    # Conformidad del conductor: la firma se inserta después (firma con el dedo en el celular)
+    h1("7. CONFORMIDAD DEL CONDUCTOR")
+    parrafo(f"Yo, {_s(d.get('conductor')) or '________________'}, declaro haber sido notificado del presente informe "
+            f"y del monto a descontar de S/ {total:,.2f} sin IGV (S/ {total_igv:,.2f} con IGV).")
+    p = doc.add_paragraph(FIRMA_MARCA); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p = doc.add_paragraph("_______________________________"); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after = Pt(0)
+    p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = p.add_run(_s(d.get("conductor")) or "Conductor"); r.bold = True
+    p = doc.add_paragraph(FECHA_FIRMA_MARCA); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    buf = io.BytesIO(); doc.save(buf)
+    return buf.getvalue()
+
+
+FIRMA_MARCA = "[[FIRMA_CONDUCTOR]]"
+FECHA_FIRMA_MARCA = "[[FECHA_FIRMA]]"
+
+
+def firmar_word(docx: bytes, firma_png: bytes | None, fecha: str = "") -> bytes:
+    """Pone la firma del conductor (o deja el espacio en blanco) en el Word guardado."""
+    from docx import Document
+    from docx.shared import Cm
+    doc = Document(io.BytesIO(docx))
+    for p in doc.paragraphs:
+        if p.text.strip() == FIRMA_MARCA:
+            for r in p.runs:
+                r.text = ""
+            if firma_png:
+                try:
+                    p.runs[0].add_picture(io.BytesIO(firma_png), width=Cm(5))
+                except Exception:
+                    pass
+            else:
+                p.runs[0].add_break(); p.runs[0].add_break()
+        elif p.text.strip() == FECHA_FIRMA_MARCA:
+            for r in p.runs:
+                r.text = ""
+            p.runs[0].text = f"Firmado el {fecha}" if (firma_png and fecha) else "Fecha: ____ / ____ / ________"
     buf = io.BytesIO(); doc.save(buf)
     return buf.getvalue()
