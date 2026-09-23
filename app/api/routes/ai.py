@@ -10,7 +10,7 @@ from ...services.ai.tire_analyzer import analyze_tire_image, WEAR_LEVELS
 from ...services.ai.vision_ai import analyze_tire_vision, vision_diagnostic
 from ...services.ai.dataset_collector import save_training_sample, get_dataset_stats
 from ...services.ai.reference_measurement import measure_with_reference, REFERENCE_OBJECTS
-from ...services.ai.insights import ask_gastos, alertas_desgaste
+from ...services.ai.insights import ask_gastos, alertas_desgaste, resumen_ejecutivo
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -37,6 +37,15 @@ def alertas_desgaste_route(
 ):
     """#3: convierte la predicción de desgaste en alertas accionables en lenguaje claro."""
     return alertas_desgaste(db, inspector.company_id, horizonte or None)
+
+
+@router.get("/resumen-ejecutivo")
+def resumen_ejecutivo_route(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Resumen ejecutivo de alto impacto (cuantitativo + cualitativo) para gerencia."""
+    return resumen_ejecutivo(db, inspector.company_id)
 
 
 class TireAnalysisOut(BaseModel):

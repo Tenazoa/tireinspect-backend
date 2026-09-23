@@ -157,3 +157,101 @@ def _num(x):
         return float(x)
     except Exception:
         return 99.0
+
+
+# ── Resumen ejecutivo de alto impacto (cuantitativo + cualitativo) ───────────
+
+_SYS_EJEC = (
+    "Eres el gerente de control de neumáticos de TYMSAC (transporte de carga en Perú) y escribes "
+    "para la Gerencia General. Con las MÉTRICAS JSON que te doy redacta un informe ejecutivo de ALTO "
+    "IMPACTO, cuantitativo y cualitativo, en español profesional y directo. Usa Markdown con estas "
+    "secciones EXACTAS y breves:\n"
+    "## Situación general\n(2-3 frases con las cifras clave de la flota y actividad)\n"
+    "## Costos y ahorro\n(viñetas con cifras en S/: gasto en reparación de llantas en ruta, ahorro por "
+    "reencauche, scrap/pérdida, costo de compra inmediata si lo hay)\n"
+    "## Riesgos y hallazgos\n(viñetas: llantas por cambiar/vencidas, unidades inactivas, llantas que se "
+    "reparan repetidamente, marcas de bajo rendimiento)\n"
+    "## Recomendaciones\n(3 a 5 acciones priorizadas y concretas, cada una con su impacto esperado)\n"
+    "Cita SOLO cifras que estén en el JSON; si un dato falta, omítelo. Redondea soles a enteros. "
+    "Sé conciso: máximo ~250 palabras."
+)
+
+
+def resumen_ejecutivo(db: Session, company_id) -> dict:
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        return {"ok": False, "texto": "El resumen con IA no está configurado (falta ANTHROPIC_API_KEY en el servidor).", "metricas": {}}
+    from ...models.models import Vehicle
+    m: dict = {"moneda": "PEN (S/)"}
+
+    # Flota (conteo real por tipo/estado)
+    vehs = db.query(Vehicle).filter(Vehicle.company_id == company_id).all()
+    tmap = {"truck": "Tractos", "trailer": "Carretas", "car": "Camionetas"}
+    flota = {"total": len(vehs), "activas": sum(1 for v in vehs if getattr(v, "active", True)),
+             "inactivas": sum(1 for v in vehs if getattr(v, "active", True) is False), "por_tipo": {}}
+    for v in vehs:
+        k = tmap.get(v.type, v.type or "otros")
+        b = flota["por_tipo"].setdefault(k, {"total": 0, "activas": 0})
+        b["total"] += 1
+        if getattr(v, "active", True):
+            b["activas"] += 1
+    m["flota"] = flota
+
+    # Gasto en reparación de llantas en ruta (snapshot gastos_ruta)
+    g = _load(db, company_id, "gastos_ruta") or {}
+    filas = [f for f in (g.get("filas") or []) if str(f.get("Rubro")) == RUBRO_LL]
+    if filas:
+        def _f(x):
+            try:
+                return float(x or 0)
+            except Exception:
+                return 0.0
+        by_c: dict = {}
+        reinc = 0
+        seen: dict = {}
+        for f in filas:
+            by_c[str(f.get("Conductor") or "—")] = by_c.get(str(f.get("Conductor") or "—"), 0.0) + _f(f.get("Monto"))
+            cod = str(f.get("CodigoLlanta") or "").strip()
+            if cod:
+                seen[cod] = seen.get(cod, 0) + 1
+        reinc = sum(1 for c in seen.values() if c >= 3)
+        top = max(by_c.items(), key=lambda kv: kv[1]) if by_c else (None, 0)
+        m["gasto_reparacion_llantas_ruta"] = {
+            "total": round(sum(_f(f.get("Monto")) for f in filas), 2), "n_vales": len(filas),
+            "conductor_top": top[0], "conductor_top_monto": round(top[1], 2),
+            "llantas_reparadas_3mas": reinc,
+        }
+
+    # Predicción de retiro (snapshot pred)
+    pred = _load(db, company_id, "pred") or []
+    if pred:
+        cnt: dict = {}
+        for r in pred:
+            cnt[str(r.get("Horizonte"))] = cnt.get(str(r.get("Horizonte")), 0) + 1
+        m["prediccion"] = {"total_por_cambiar": len(pred), "por_horizonte": cnt,
+                           "vencidas": cnt.get("VENCIDA", 0), "en_30_dias": cnt.get("0-30 DIAS", 0)}
+
+    # Reencauche (snapshot reencauche): conteo por decisión
+    reenc = _load(db, company_id, "reencauche") or []
+    if reenc:
+        dec: dict = {}
+        for r in reenc:
+            dec[str(r.get("Decision"))] = dec.get(str(r.get("Decision")), 0) + 1
+        m["reencauche"] = {"total": len(reenc), "por_decision": dec}
+
+    # Bajas / scrap (snapshot bajas + gerencial)
+    bajas = _load(db, company_id, "bajas") or []
+    if bajas:
+        m["bajas"] = {"total": len(bajas)}
+    ger = _load(db, company_id, "gerencial") or {}
+    if ger:
+        m["scrap"] = {"mes": ger.get("scrap_mes"), "anio": ger.get("scrap_2026"),
+                      "alertas_altas": ger.get("alertas_altas")}
+
+    try:
+        resp = _client().messages.create(
+            model=_MODEL, max_tokens=1600, system=_SYS_EJEC,
+            messages=[{"role": "user", "content": f"MÉTRICAS (JSON):\n{json.dumps(m, ensure_ascii=False)}"}],
+        )
+        return {"ok": True, "texto": _texto(resp), "metricas": m}
+    except Exception as e:
+        return {"ok": False, "texto": f"No se pudo generar el resumen con IA: {str(e)[:160]}", "metricas": m}
