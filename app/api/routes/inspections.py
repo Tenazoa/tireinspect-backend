@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import io
 from datetime import timedelta
 from ...core.database import get_db
@@ -119,6 +119,16 @@ class InspectionOut(BaseModel):
     completedAt: Optional[str]
 
 
+def _fecha(txt: str) -> datetime:
+    """Fecha ISO del celular ("...Z" o con zona) -> datetime UTC SIN zona, igual que la BD.
+    Mezclar fechas con y sin zona hacía fallar (500) la re-sincronización al comparar
+    con vehicle.last_inspection, y el celular nunca marcaba la inspección como subida."""
+    d = datetime.fromisoformat(str(txt).replace("Z", "+00:00"))
+    if d.tzinfo is not None:
+        d = d.astimezone(timezone.utc).replace(tzinfo=None)
+    return d
+
+
 @router.post("/sync", status_code=200)
 def sync_inspection(
     body: InspectionSyncIn,
@@ -134,6 +144,7 @@ def sync_inspection(
 
     # Upsert inspection
     insp = db.get(Inspection, body.id)
+    es_nueva = insp is None
     if insp is None:
         insp = Inspection(id=body.id)
         db.add(insp)
@@ -145,22 +156,25 @@ def sync_inspection(
     insp.location_address = body.locationAddress
     insp.odometer_km = body.odometerKm
     insp.status = body.status
-    insp.created_at = datetime.fromisoformat(body.createdAt)
-    insp.completed_at = datetime.fromisoformat(body.completedAt) if body.completedAt else None
+    insp.created_at = _fecha(body.createdAt)
+    insp.completed_at = _fecha(body.completedAt) if body.completedAt else None
 
     # Borrar llantas y fotos anteriores de ESTA inspección y volver a insertarlas.
     # Se usa borrado masivo (bulk) para no dejar esos ids en el identity map de
     # SQLAlchemy: así re-sincronizar la misma inspección (mismo id de llanta/foto)
     # no choca con "ya existe en la sesión" al reinsertar.
-    old_tire_ids = [t.id for t in insp.tires]
-    if old_tire_ids:
-        db.query(TirePhoto).filter(
-            TirePhoto.tire_inspection_id.in_(old_tire_ids)
-        ).delete(synchronize_session=False)
-        db.query(TireInspection).filter(
-            TireInspection.inspection_id == body.id
-        ).delete(synchronize_session=False)
-    db.expire(insp, ["tires"])
+    # (solo si la inspección ya existía: expirar una inspección nueva, aún no guardada,
+    # lanza "is not persistent" y hacía fallar TODA subida nueva)
+    if not es_nueva:
+        old_tire_ids = [t.id for t in insp.tires]
+        if old_tire_ids:
+            db.query(TirePhoto).filter(
+                TirePhoto.tire_inspection_id.in_(old_tire_ids)
+            ).delete(synchronize_session=False)
+            db.query(TireInspection).filter(
+                TireInspection.inspection_id == body.id
+            ).delete(synchronize_session=False)
+        db.expire(insp, ["tires"])
     db.flush()
 
     for t in body.tires:
@@ -182,7 +196,7 @@ def sync_inspection(
             pressure_psi=t.pressurePsi,
             recommendation=t.recommendation,
             notes=t.notes,
-            inspected_at=datetime.fromisoformat(t.inspectedAt),
+            inspected_at=_fecha(t.inspectedAt),
         )
         db.add(tire)
 
@@ -193,7 +207,7 @@ def sync_inspection(
                 tire_inspection_id=t.id,
                 url=url,
                 type=p.type,
-                captured_at=datetime.fromisoformat(p.capturedAt),
+                captured_at=_fecha(p.capturedAt),
             )
             db.add(photo)
 
@@ -201,7 +215,10 @@ def sync_inspection(
     # reciente. Antes se pisaba siempre: al llegar una inspección vieja (o al
     # re-sincronizar una antigua) la flota quedaba como si esa fuera la última.
     nueva = insp.completed_at or insp.created_at
-    if nueva and (vehicle.last_inspection is None or nueva > vehicle.last_inspection):
+    ult = vehicle.last_inspection
+    if ult is not None and ult.tzinfo is not None:
+        ult = ult.astimezone(timezone.utc).replace(tzinfo=None)
+    if nueva and (ult is None or nueva > ult):
         vehicle.last_inspection = nueva
     db.commit()
     return {"ok": True}
