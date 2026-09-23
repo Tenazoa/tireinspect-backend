@@ -10,8 +10,33 @@ from ...services.ai.tire_analyzer import analyze_tire_image, WEAR_LEVELS
 from ...services.ai.vision_ai import analyze_tire_vision, vision_diagnostic
 from ...services.ai.dataset_collector import save_training_sample, get_dataset_stats
 from ...services.ai.reference_measurement import measure_with_reference, REFERENCE_OBJECTS
+from ...services.ai.insights import ask_gastos, alertas_desgaste
 
 router = APIRouter(prefix="/ai", tags=["ai"])
+
+
+class PreguntaIn(BaseModel):
+    pregunta: str
+
+
+@router.post("/ask-gastos")
+def ask_gastos_route(
+    body: PreguntaIn,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """#4: pregunta en lenguaje natural sobre el gasto en ruta de reparación de llantas."""
+    return ask_gastos(db, inspector.company_id, body.pregunta)
+
+
+@router.get("/alertas-desgaste")
+def alertas_desgaste_route(
+    horizonte: str = "",
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """#3: convierte la predicción de desgaste en alertas accionables en lenguaje claro."""
+    return alertas_desgaste(db, inspector.company_id, horizonte or None)
 
 
 class TireAnalysisOut(BaseModel):
