@@ -377,6 +377,24 @@ class Descargo(Base):
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
 
 
+class ParkedTire(Base):
+    """Reporte SOLOMON 'NO RECORRIENDO (DÍAS PARADOS)' — una fila por LLANTA que
+    no rueda: días parada, placa, posición, km y vida. Para priorizar retiro/
+    reencauche. Se sube manualmente (distinto del módulo por-unidad)."""
+    __tablename__ = "parked_tires"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    code: Mapped[str] = mapped_column(String, nullable=False, index=True)   # NroLlanta
+    vida: Mapped[str | None] = mapped_column(String, nullable=True)          # 1V/1R/2R
+    placa: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    posicion: Mapped[str | None] = mapped_column(String, nullable=True)
+    km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dias: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    tipo_unidad: Mapped[str | None] = mapped_column(String, nullable=True)
+    condicion: Mapped[str | None] = mapped_column(String, nullable=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
 class AnaliticaSnapshot(Base):
     """Análisis diario calculado en la PC por 11_generar_web.py (predicción, alertas,
     reencauche, garantías, rotaciones, pedido, resumen gerencial) y subido por

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia, VehicleEstadoOficial, ReencaucheTire
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia, VehicleEstadoOficial, ReencaucheTire, ParkedTire
 
 
 def _audit(db, inspector, action, target, detail):
@@ -3591,6 +3591,107 @@ def _pressure(vehicle_type: Optional[str], position: str) -> Optional[float]:
     if vehicle_type == "trailer":
         return 120.0
     return None
+
+
+# ── Llantas paradas (reporte SOLOMON vLlantasDiasParados) ────────────────────
+
+class ParkedTireIn(BaseModel):
+    code: str
+    vida: Optional[str] = None
+    placa: Optional[str] = None
+    posicion: Optional[str] = None
+    km: Optional[float] = None
+    dias: Optional[int] = None
+    tipoUnidad: Optional[str] = None
+    estadoUnidad: Optional[str] = None
+    condicion: Optional[str] = None
+
+
+class ParkedTiresIn(BaseModel):
+    items: list[ParkedTireIn]
+
+
+@router.post("/upload-llantas-paradas")
+def upload_llantas_paradas(
+    body: ParkedTiresIn,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Recibe el reporte SOLOMON 'días parados' (una fila por llanta que no rueda)
+    y reemplaza las llantas paradas de la empresa. Lo alimenta un script en la PC."""
+    if inspector.role not in ("admin", "supervisor"):
+        raise HTTPException(403, "Solo admin o supervisor pueden cargar las llantas paradas")
+    cid = inspector.company_id
+    db.query(ParkedTire).filter(ParkedTire.company_id == cid).delete()
+    n = 0
+    for r in body.items:
+        code = (r.code or "").strip()
+        if not code:
+            continue
+        db.add(ParkedTire(
+            company_id=cid, code=code, vida=(r.vida or "").strip() or None,
+            placa=(r.placa or "").strip().upper().replace(" ", "") or None,
+            posicion=(r.posicion or "").strip() or None, km=r.km, dias=r.dias,
+            tipo_unidad=(r.tipoUnidad or "").strip() or None,
+            condicion=(r.condicion or "").strip() or None,
+        ))
+        n += 1
+    db.commit()
+    _audit(db, inspector, "cargar-llantas-paradas", f"{n} llantas", "SOLOMON vLlantasDiasParados")
+    return {"ok": True, "cargadas": n}
+
+
+@router.get("/llantas-paradas")
+def get_llantas_paradas(
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Llantas que no ruedan, con días parados. Cruza cocada conocida para marcar
+    las aprovechables (≥8 mm). Buckets por antigüedad (<3, 3-6, +6 meses)."""
+    cid = inspector.company_id
+    rows = db.query(ParkedTire).filter(ParkedTire.company_id == cid).all()
+    # cocada por código (best-effort) para marcar aprovechables
+    coc: dict[str, float] = {}
+    for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
+        if s.code and s.last_depth_mm is not None:
+            coc.setdefault(str(s.code).strip(), float(s.last_depth_mm))
+    # estado activo/inactivo de cada placa (tabla de vehículos de la empresa)
+    def _p(x):
+        return (x or "").upper().replace("-", "").replace(" ", "")
+    activa_por_placa: dict[str, bool] = {
+        _p(v.plate): bool(getattr(v, "active", True))
+        for v in db.query(Vehicle).filter(Vehicle.company_id == cid).all()
+    }
+    APROV = 8.0
+    items = []
+    menos3 = tres6 = mas6 = aprov = inact = 0
+    for r in rows:
+        d = int(r.dias or 0)
+        if d < 90:
+            menos3 += 1
+        elif d <= 180:
+            tres6 += 1
+        else:
+            mas6 += 1
+        cocada = coc.get((r.code or "").strip())
+        ap = cocada is not None and cocada >= APROV
+        if ap:
+            aprov += 1
+        activa = activa_por_placa.get(_p(r.placa), True)
+        if not activa:
+            inact += 1
+        items.append({
+            "code": r.code, "vida": r.vida, "placa": r.placa, "posicion": r.posicion,
+            "km": r.km, "dias": d, "meses": round(d / 30.0, 1),
+            "tipoUnidad": r.tipo_unidad, "condicion": r.condicion,
+            "cocada": cocada, "aprovechable": ap, "activa": activa,
+        })
+    items.sort(key=lambda x: x["dias"], reverse=True)
+    return {
+        "items": items,
+        "resumen": {"total": len(items), "menos3": menos3, "tres6": tres6,
+                    "mas6": mas6, "aprovechables": aprov, "inactivas": inact},
+    }
 
 
 @router.get("/{plate}", response_model=list[TireSpecOut])
