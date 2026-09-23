@@ -92,6 +92,15 @@ try:
     _bootstrap_admin()
 except Exception as _e:
     print(f"[startup] Bootstrap admin omitido: {_e}")
+
+# Aviso de seguridad: si en producción (Postgres) sigue la SECRET_KEY por
+# defecto, cualquiera podría firmar un JWT válido. Debe definirse la variable de
+# entorno SECRET_KEY en Render. No se rota automáticamente aquí a propósito:
+# hacerlo cerraría la sesión de todos en cada despliegue.
+if engine.dialect.name == "postgresql" and settings.SECRET_KEY == "change-me-in-production-tireinspect-2026":
+    print("[SEGURIDAD] SECRET_KEY sigue con el valor por defecto en producción. "
+          "Define la variable de entorno SECRET_KEY en Render (una cadena larga y aleatoria).")
+
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
 app = FastAPI(
@@ -102,8 +111,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # dev: permite celular en red local
-    allow_credentials=True,
+    allow_origins=["*"],  # permite celular en red local y la web en Vercel
+    # La autenticación va por header Bearer (no cookies), así que no se necesitan
+    # credenciales CORS. Con allow_credentials=True el navegador RECHAZA la
+    # respuesta cuando el origen es "*", rompiendo cualquier dashboard web de otro
+    # origen; con False, "*" funciona correctamente.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "X-Descargo-Monto", "X-Descargo-Causa", "X-Descargo-Id"],

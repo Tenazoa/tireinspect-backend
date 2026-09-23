@@ -83,7 +83,8 @@ def seed_if_empty() -> None:
         fleet_count = _load_fleet(db, company.id)
 
         db.commit()
-        print(f"[seed] Inspector + {fleet_count} vehiculos SOLOMON creados: inspector@demo.com / demo1234")
+        # No imprimir la contraseña en el log (queda registrada en la plataforma).
+        print(f"[seed] Inspector demo + {fleet_count} vehiculos SOLOMON creados.")
     except Exception as e:
         db.rollback()
         print(f"[seed] Error: {e}")

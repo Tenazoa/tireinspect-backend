@@ -62,13 +62,15 @@ def vehicle_to_out(v: Vehicle) -> VehicleOut:
 def search_vehicles(
     plate: str = Query(..., min_length=2),
     db: Session = Depends(get_db),
-    _: Inspector = Depends(get_current_inspector),
+    inspector: Inspector = Depends(get_current_inspector),
 ):
     # Las placas se guardan SIN guion ni espacios (ej. "T8D866"); el usuario
     # suele escribirlas con guion (formato oficial "T8D-866"). Normalizamos la
     # búsqueda para que "T8D-866", "t8d 866", etc. encuentren la unidad.
+    # Aislamiento: solo unidades de la empresa del inspector.
     q = "".join(ch for ch in plate if ch.isalnum())
     vehicles = db.query(Vehicle).filter(
+        Vehicle.company_id == inspector.company_id,
         Vehicle.plate.ilike(f"%{q}%")
     ).order_by(Vehicle.last_inspection.desc().nullslast()).limit(10).all()
     return [vehicle_to_out(v) for v in vehicles]

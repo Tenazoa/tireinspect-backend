@@ -93,10 +93,14 @@ def _infer_type(solomon_type: str | None, n_tires: int) -> str:
     t = (solomon_type or "").upper()
     if "CARRETA" in t or "SEMI" in t or "REMOLQ" in t:
         return "trailer"
-    if "TRACTO" in t or "CAMION" in t or "VOLQ" in t:
+    if "CAMIONETA" in t or "PICK" in t or "AUTO" in t or "LIVIANO" in t:
+        return "car"
+    if "TRACTO" in t or "CAMION" in t or "VOLQ" in t or "BUS" in t:
         return "truck"
-    if n_tires >= 10:
-        return "truck"
+    # Sin tipo declarado: deducir por número de posiciones. Un tracto/camión
+    # ronda 10-12 llantas; una camioneta/auto 4-6. (Antes todo caía en "truck".)
+    if n_tires and n_tires <= 6:
+        return "car"
     return "truck"
 
 
@@ -107,6 +111,8 @@ def import_fleet(
     inspector: Inspector = Depends(get_current_inspector),
 ):
     """Importa el catálogo de flota desde SOLOMON. Reemplaza specs existentes por placa."""
+    if inspector.role not in ("admin", "supervisor"):
+        raise HTTPException(403, "Solo admin o supervisor pueden importar la flota")
     company_id = inspector.company_id
     vehicles_created = 0
     specs_created = 0
@@ -118,8 +124,10 @@ def import_fleet(
         positions = [t.position for t in v.tires]
         vtype = _infer_type(v.type, len(positions))
 
-        # Upsert vehicle
-        vehicle = db.query(Vehicle).filter(Vehicle.plate == plate).first()
+        # Upsert vehicle (solo dentro de la empresa del inspector).
+        vehicle = db.query(Vehicle).filter(
+            Vehicle.company_id == company_id, Vehicle.plate == plate
+        ).first()
         if not vehicle:
             vehicle = Vehicle(
                 id=str(uuid.uuid4()), plate=plate, brand="—", model="—",
@@ -132,8 +140,11 @@ def import_fleet(
             vehicle.tire_positions = positions
             vehicle.type = vtype
 
-        # Reemplazar specs de esta placa
-        db.query(TireSpec).filter(TireSpec.plate == plate).delete()
+        # Reemplazar specs de esta placa (solo de esta empresa; antes borraba las
+        # de TODAS las empresas que tuvieran esa placa).
+        db.query(TireSpec).filter(
+            TireSpec.company_id == company_id, TireSpec.plate == plate
+        ).delete()
         for t in v.tires:
             db.add(TireSpec(
                 id=str(uuid.uuid4()), plate=plate, position=t.position,
@@ -3527,14 +3538,18 @@ class MakesImportIn(BaseModel):
 def update_makes(
     body: MakesImportIn,
     db: Session = Depends(get_db),
-    _: Inspector = Depends(get_current_inspector),
+    inspector: Inspector = Depends(get_current_inspector),
 ):
     """Actualiza marca/modelo del vehículo por placa (datos de SITUACIONAL FLOTA)."""
+    if inspector.role not in ("admin", "supervisor"):
+        raise HTTPException(403, "Solo admin o supervisor pueden editar la flota")
     updated = 0
     not_found = []
     for m in body.makes:
         plate = m.plate.strip().upper().replace("-", "").replace(" ", "")
-        v = db.query(Vehicle).filter(Vehicle.plate == plate).first()
+        v = db.query(Vehicle).filter(
+            Vehicle.company_id == inspector.company_id, Vehicle.plate == plate
+        ).first()
         if v:
             v.brand = m.brand
             v.model = m.model or "Tracto"
@@ -3587,12 +3602,14 @@ def get_fleet_tires(
     """Autollenado: llantas conocidas de una placa (marca/modelo/medida/última cocada/presión)."""
     import datetime as _dt
     p = plate.strip().upper().replace("-", "").replace(" ", "")
-    vehicle = db.query(Vehicle).filter(Vehicle.plate == p).first()
-    vtype = vehicle.type if vehicle else None
     cid = _.company_id
+    vehicle = db.query(Vehicle).filter(
+        Vehicle.company_id == cid, Vehicle.plate == p
+    ).first()
+    vtype = vehicle.type if vehicle else None
     specs = (
         db.query(TireSpec)
-        .filter(TireSpec.plate == p)
+        .filter(TireSpec.company_id == cid, TireSpec.plate == p)
         .order_by(TireSpec.position)
         .all()
     )

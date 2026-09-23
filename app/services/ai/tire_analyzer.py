@@ -171,11 +171,22 @@ def _detect_tire_presence(img: np.ndarray) -> tuple[bool, float]:
                                 minRadius=50, maxRadius=250)
 
     has_circles = circles is not None
-    confidence = min(dark_ratio * 1.5, 1.0) * (1.2 if has_circles else 0.8)
-    confidence = min(confidence, 1.0)
 
-    # Umbral de detección: imagen oscura + preferiblemente con forma circular
-    is_tire = dark_ratio > 0.15 or has_circles
+    # Textura: una llanta real tiene surcos (varianza de Laplaciano alta); una
+    # pared/asfalto oscuro no. Esto evita que "cualquier foto oscura" pase.
+    texture_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    has_texture = texture_var > 60.0
+
+    # Regla: goma negra CON estructura (círculo del perfil o textura de surcos),
+    # o bien una imagen muy oscura que llena el cuadro (close-up de banda).
+    is_tire = (dark_ratio > 0.15 and (has_circles or has_texture)) or dark_ratio > 0.45
+
+    # Confianza deliberadamente moderada: es una heurística por imagen (OpenCV),
+    # NO una medición. Solo se usa como respaldo cuando la visión IA no está
+    # disponible; el consumidor debe tratar la cocada como estimada.
+    confidence = min(dark_ratio, 0.6) * (1.0 if (has_circles and has_texture)
+                                         else 0.7 if (has_circles or has_texture) else 0.4)
+    confidence = min(confidence, 0.75)
     return bool(is_tire), float(confidence)
 
 

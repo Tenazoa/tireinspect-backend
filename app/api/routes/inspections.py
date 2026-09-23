@@ -128,6 +128,9 @@ def sync_inspection(
     vehicle = db.get(Vehicle, body.vehicleId)
     if not vehicle:
         raise HTTPException(404, "Vehículo no encontrado")
+    # Aislamiento: no permitir sincronizar sobre un vehículo de otra empresa.
+    if vehicle.company_id != inspector.company_id:
+        raise HTTPException(403, "No autorizado")
 
     # Upsert inspection
     insp = db.get(Inspection, body.id)
@@ -145,9 +148,19 @@ def sync_inspection(
     insp.created_at = datetime.fromisoformat(body.createdAt)
     insp.completed_at = datetime.fromisoformat(body.completedAt) if body.completedAt else None
 
-    # Delete existing tires and re-insert (simple upsert strategy)
-    for existing_tire in insp.tires:
-        db.delete(existing_tire)
+    # Borrar llantas y fotos anteriores de ESTA inspección y volver a insertarlas.
+    # Se usa borrado masivo (bulk) para no dejar esos ids en el identity map de
+    # SQLAlchemy: así re-sincronizar la misma inspección (mismo id de llanta/foto)
+    # no choca con "ya existe en la sesión" al reinsertar.
+    old_tire_ids = [t.id for t in insp.tires]
+    if old_tire_ids:
+        db.query(TirePhoto).filter(
+            TirePhoto.tire_inspection_id.in_(old_tire_ids)
+        ).delete(synchronize_session=False)
+        db.query(TireInspection).filter(
+            TireInspection.inspection_id == body.id
+        ).delete(synchronize_session=False)
+    db.expire(insp, ["tires"])
     db.flush()
 
     for t in body.tires:
@@ -184,8 +197,12 @@ def sync_inspection(
             )
             db.add(photo)
 
-    # Actualizar last_inspection del vehículo
-    vehicle.last_inspection = insp.completed_at or insp.created_at
+    # Actualizar last_inspection del vehículo SOLO si esta inspección es más
+    # reciente. Antes se pisaba siempre: al llegar una inspección vieja (o al
+    # re-sincronizar una antigua) la flota quedaba como si esa fuera la última.
+    nueva = insp.completed_at or insp.created_at
+    if nueva and (vehicle.last_inspection is None or nueva > vehicle.last_inspection):
+        vehicle.last_inspection = nueva
     db.commit()
     return {"ok": True}
 

@@ -51,6 +51,10 @@ def position_label(code: str) -> str:
         lado = "Izq." if side == "L" else "Der."
         ext = "Ext." if pos == "O" else "Int."
         return f"Eje {axle} {lado} {ext}"
+    # Posiciones SOLOMON tipo P01..P12 (numeración correlativa de la unidad).
+    mp = re.match(r"^P0*(\d+)$", code or "")
+    if mp:
+        return f"Posición {int(mp.group(1))}"
     return code
 
 

@@ -23,8 +23,12 @@ async def upload_photo(
     db: Session = Depends(get_db),
     _: Inspector = Depends(get_current_inspector),
 ):
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(400, "Solo se permiten imágenes")
+    # Solo imágenes rasterizadas. Se excluye SVG a propósito: un .svg puede
+    # contener <script> y, servido desde el propio dominio de la API, ejecutaría
+    # XSS si alguien lo abre directamente.
+    ALLOWED = {"image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic", "image/heif"}
+    if not file.content_type or file.content_type.lower() not in ALLOWED:
+        raise HTTPException(400, "Solo se permiten imágenes JPEG, PNG, WEBP o HEIC")
     content = await file.read()
     blob = PhotoBlob(
         id=str(uuid.uuid4()),
