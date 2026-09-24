@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia, VehicleEstadoOficial, ReencaucheTire, ParkedTire, TireInstall
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia, VehicleEstadoOficial, ReencaucheTire, ParkedTire, TireInstall, TireRendimiento
 
 
 def _audit(db, inspector, action, target, detail):
@@ -3734,6 +3734,123 @@ def get_llantas_paradas(
                     "aprovechables": aprov, "noAprovechables": len(items) - aprov,
                     "inactivas": inact, "porVida": por_vida},
     }
+
+
+# ── Rendimiento y proyección por llanta (SOLOMON) ────────────────────────────
+
+class RendItemIn(BaseModel):
+    code: str
+    placa: Optional[str] = None
+    posicion: Optional[str] = None
+    flota: Optional[str] = None
+    tipoUnidad: Optional[str] = None
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    medida: Optional[str] = None
+    vida: Optional[str] = None
+    cocadaOrig: Optional[float] = None
+    cocadaAct: Optional[float] = None
+    fechaMontaje: Optional[str] = None
+    km: Optional[float] = None
+    costo: Optional[float] = None
+
+
+class RendIn(BaseModel):
+    items: list[RendItemIn]
+
+
+@router.post("/upload-rendimiento")
+def upload_rendimiento(
+    body: RendIn,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Recibe el rendimiento por llanta montada (SOLOMON). Lo sube el script PC."""
+    if inspector.role not in ("admin", "supervisor"):
+        raise HTTPException(403, "Solo admin o supervisor pueden cargar el rendimiento")
+    cid = inspector.company_id
+    db.query(TireRendimiento).filter(TireRendimiento.company_id == cid).delete()
+    n = 0
+    for r in body.items:
+        code = (r.code or "").strip()
+        if not code:
+            continue
+        db.add(TireRendimiento(
+            company_id=cid, code=code,
+            placa=(r.placa or "").strip().upper().replace(" ", "") or None,
+            posicion=(r.posicion or "").strip() or None, flota=(r.flota or "").strip() or None,
+            tipo_unidad=(r.tipoUnidad or "").strip() or None, marca=(r.marca or "").strip() or None,
+            modelo=(r.modelo or "").strip() or None, medida=(r.medida or "").strip() or None,
+            vida=(r.vida or "").strip() or None, cocada_orig=r.cocadaOrig, cocada_act=r.cocadaAct,
+            fecha_montaje=(r.fechaMontaje or "").strip() or None, km=r.km, costo=r.costo,
+        ))
+        n += 1
+    db.commit()
+    _audit(db, inspector, "cargar-rendimiento", f"{n} llantas", "SOLOMON")
+    return {"ok": True, "cargadas": n}
+
+
+@router.get("/rendimiento")
+def get_rendimiento(
+    limite: float = 3.0,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Cuadro de rendimiento/proyección de las llantas rodando: km/mm, % desgaste,
+    proyección de km al límite de retiro y CPK real vs proyectado (S/ por 1000 km)."""
+    cid = inspector.company_id
+    rows = db.query(TireRendimiento).filter(TireRendimiento.company_id == cid).all()
+    # km recorrido de respaldo desde el km mensual de la unidad (si SOLOMON no trajo km).
+    km_by_plate: dict[str, list] = {}
+    for k in db.query(VehicleKm.plate, VehicleKm.year, VehicleKm.month, VehicleKm.km).filter(
+            VehicleKm.company_id == cid):
+        km_by_plate.setdefault((k[0] or "").upper().replace(" ", ""), []).append((k[1], k[2], k[3] or 0))
+
+    def _km_desde(placa, fecha):
+        if not placa or not fecha:
+            return None
+        try:
+            y, m = int(fecha[:4]), int(fecha[5:7])
+        except Exception:
+            return None
+        tot = sum(v for (yy, mm, v) in km_by_plate.get((placa or "").upper().replace(" ", ""), [])
+                  if (yy > y) or (yy == y and mm >= m))
+        return tot or None
+
+    items = []
+    for r in rows:
+        orig = r.cocada_orig
+        act = r.cocada_act
+        km = r.km if (r.km and r.km > 0) else _km_desde(r.placa, r.fecha_montaje)
+        mm_gast = (orig - act) if (orig is not None and act is not None) else None
+        km_mm = round(km / mm_gast, 1) if (km and mm_gast and mm_gast > 0) else None
+        pct = round((orig - act) / orig * 100, 1) if (orig and act is not None and orig > 0) else None
+        # Proyección: km total estimado al llegar al límite de retiro, al ritmo actual.
+        proy = round((orig - limite) * km_mm) if (km_mm and orig is not None and orig > limite) else None
+        # Costo real del Kardex SOLOMON si vino; si no, precio promedio por marca/modelo.
+        costo = r.costo if (r.costo and r.costo > 0) else _precio_nueva(r.marca, r.modelo)
+        cpk_real = round(costo / km * 1000, 2) if (costo and km and km > 0) else None
+        cpk_proy = round(costo / proy * 1000, 2) if (costo and proy and proy > 0) else None
+        items.append({
+            "code": r.code, "placa": r.placa, "posicion": r.posicion, "flota": r.flota,
+            "tipoUnidad": r.tipo_unidad, "marca": r.marca, "modelo": r.modelo, "medida": r.medida,
+            "vida": r.vida, "cocadaOrig": orig, "cocadaAct": act, "fechaMontaje": r.fecha_montaje,
+            "km": round(km) if km else None, "kmMm": km_mm, "pctDesgaste": pct,
+            "proyeccion": proy, "costo": costo, "cpkReal": cpk_real, "cpkProy": cpk_proy,
+        })
+    items.sort(key=lambda x: (x["cpkProy"] is None, x["cpkProy"] or 0), reverse=False)
+
+    con_km = [x for x in items if x["kmMm"]]
+    resumen = {
+        "total": len(items), "conRendimiento": len(con_km),
+        "kmMmProm": round(sum(x["kmMm"] for x in con_km) / len(con_km), 1) if con_km else None,
+        "proyProm": round(sum(x["proyeccion"] for x in con_km if x["proyeccion"]) /
+                          max(1, len([x for x in con_km if x["proyeccion"]]))) if con_km else None,
+        "cpkProyProm": round(sum(x["cpkProy"] for x in con_km if x["cpkProy"]) /
+                             max(1, len([x for x in con_km if x["cpkProy"]])), 2) if con_km else None,
+        "limite": limite,
+    }
+    return {"items": items, "resumen": resumen}
 
 
 # ── Instalación por llanta (SOLOMON tabla LLantas) ───────────────────────────

@@ -377,6 +377,30 @@ class Descargo(Base):
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
 
 
+class TireRendimiento(Base):
+    """Rendimiento por llanta montada (SOLOMON): cocada original (del último
+    'Enllante'/montaje) y actual, km recorrido de la vida y fecha de montaje.
+    El backend calcula km/mm, % desgaste, proyección (a límite) y CPK."""
+    __tablename__ = "tire_rendimiento"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    code: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    placa: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    posicion: Mapped[str | None] = mapped_column(String, nullable=True)
+    flota: Mapped[str | None] = mapped_column(String, nullable=True)
+    tipo_unidad: Mapped[str | None] = mapped_column(String, nullable=True)
+    marca: Mapped[str | None] = mapped_column(String, nullable=True)
+    modelo: Mapped[str | None] = mapped_column(String, nullable=True)
+    medida: Mapped[str | None] = mapped_column(String, nullable=True)
+    vida: Mapped[str | None] = mapped_column(String, nullable=True)
+    cocada_orig: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cocada_act: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fecha_montaje: Mapped[str | None] = mapped_column(String, nullable=True)   # yyyy-mm-dd
+    km: Mapped[float | None] = mapped_column(Float, nullable=True)             # km recorrido de la vida
+    costo: Mapped[float | None] = mapped_column(Float, nullable=True)          # costo prom del Kardex SOLOMON
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
 class TireInstall(Base):
     """Instalación por llanta desde SOLOMON (tabla LLantas): placa donde está,
     fecha de instalación (FechaIngreso) y km de instalación (KMRIngreso).
