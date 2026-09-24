@@ -3665,12 +3665,20 @@ def get_llantas_paradas(
         if cocada is not None and d["cocada"] is None:
             d["cocada"] = float(cocada)
 
-    for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
-        _merge(s.code, s.brand, s.size, s.last_depth_mm)
-    for s in db.query(TireStock).filter(TireStock.company_id == cid).all():
-        _merge(s.code, s.brand, s.size, s.depth_mm)
-    for s in db.query(TireDetalle).filter(TireDetalle.company_id == cid).all():
-        _merge(s.code, s.brand, s.size, None)
+    # Solo las columnas necesarias (tuplas ligeras) para no cargar en memoria
+    # miles de objetos ORM completos (evita picos que reinician el free tier).
+    for code, brand, size, depth in db.query(
+            TireSpec.code, TireSpec.brand, TireSpec.size, TireSpec.last_depth_mm
+    ).filter(TireSpec.company_id == cid):
+        _merge(code, brand, size, depth)
+    for code, brand, size, depth in db.query(
+            TireStock.code, TireStock.brand, TireStock.size, TireStock.depth_mm
+    ).filter(TireStock.company_id == cid):
+        _merge(code, brand, size, depth)
+    for code, brand, size in db.query(
+            TireDetalle.code, TireDetalle.brand, TireDetalle.size
+    ).filter(TireDetalle.company_id == cid):
+        _merge(code, brand, size, None)
     # estado activo/inactivo de cada placa (tabla de vehículos de la empresa)
     def _p(x):
         return (x or "").upper().replace("-", "").replace(" ", "")

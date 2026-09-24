@@ -6,11 +6,12 @@ from sqlalchemy.orm import Session
 from ...core.database import get_db
 from ...api.deps import get_current_inspector
 from ...models.models import Inspector, TireSpec, Vehicle
-from ...services.ai.tire_analyzer import analyze_tire_image, WEAR_LEVELS
 from ...services.ai.vision_ai import analyze_tire_vision, vision_diagnostic
 from ...services.ai.dataset_collector import save_training_sample, get_dataset_stats
-from ...services.ai.reference_measurement import measure_with_reference, REFERENCE_OBJECTS
 from ...services.ai.insights import ask_gastos, alertas_desgaste, resumen_ejecutivo
+# tire_analyzer y reference_measurement importan OpenCV (cv2, ~150 MB). Se
+# importan DENTRO de sus rutas (abajo) para no cargar cv2 al arrancar y así
+# bajar la memoria base del servicio (Render free = 512 MB).
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -102,6 +103,8 @@ async def analyze_tire(
     image_bytes = await file.read()
     if len(image_bytes) < 1000:
         raise HTTPException(400, "Imagen demasiado pequeña o vacía")
+
+    from ...services.ai.tire_analyzer import analyze_tire_image, WEAR_LEVELS  # cv2 diferido
 
     # ── SUPER IA: intentar primero con visión (Claude). Si no hay clave o
     # falla, se cae al análisis OpenCV. Así nunca se rompe. ──
@@ -389,6 +392,7 @@ class ReferenceMeasurementOut(BaseModel):
 @router.get("/reference-objects")
 def list_reference_objects(_: Inspector = Depends(get_current_inspector)):
     """Lista de objetos de referencia soportados para calibración."""
+    from ...services.ai.reference_measurement import REFERENCE_OBJECTS  # cv2 diferido
     return [
         {"id": k, "label": v["label"], "real_mm": v["real_mm"], "shape": v["shape"]}
         for k, v in REFERENCE_OBJECTS.items()
@@ -412,6 +416,7 @@ async def measure_tread(
     if len(image_bytes) < 1000:
         raise HTTPException(400, "Imagen demasiado pequeña o vacía")
 
+    from ...services.ai.reference_measurement import measure_with_reference, REFERENCE_OBJECTS  # cv2 diferido
     result = measure_with_reference(image_bytes, reference_type)
 
     # Recomendación según profundidad medida
