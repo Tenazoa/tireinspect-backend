@@ -32,6 +32,7 @@ class InspectorOut(BaseModel):
     email: str
     company: str
     role: str
+    permisos: list[str] | None = None
 
 
 class LoginResponse(BaseModel):
@@ -47,6 +48,7 @@ def to_out(inspector: Inspector) -> InspectorOut:
         email=inspector.email,
         company=inspector.company.name if inspector.company else "",
         role=inspector.role,
+        permisos=getattr(inspector, "permisos", None),
     )
 
 
@@ -119,6 +121,7 @@ class UserOut(BaseModel):
     email: str
     role: str
     isActive: bool
+    permisos: list[str] | None = None
 
 
 class CreateUserIn(BaseModel):
@@ -134,7 +137,8 @@ def list_users(
     inspector: Inspector = Depends(get_current_inspector),
 ):
     users = db.query(Inspector).filter(Inspector.company_id == inspector.company_id).all()
-    return [UserOut(id=u.id, name=u.name, email=u.email, role=u.role, isActive=u.is_active) for u in users]
+    return [UserOut(id=u.id, name=u.name, email=u.email, role=u.role, isActive=u.is_active,
+                    permisos=getattr(u, "permisos", None)) for u in users]
 
 
 @router.post("/users", response_model=UserOut)
@@ -166,6 +170,28 @@ def create_user(
 def _require_admin(inspector: Inspector):
     if inspector.role != "admin":
         raise HTTPException(status_code=403, detail="Solo el administrador puede gestionar usuarios")
+
+
+class PermisosIn(BaseModel):
+    permisos: list[str] | None = None   # lista de claves de página; null = default por rol
+
+
+@router.post("/users/{user_id}/permisos")
+def set_permisos(
+    user_id: str,
+    body: PermisosIn,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Define qué páginas puede ver un usuario (solo admin)."""
+    _require_admin(inspector)
+    u = db.query(Inspector).filter(
+        Inspector.id == user_id, Inspector.company_id == inspector.company_id).first()
+    if not u:
+        raise HTTPException(404, "Usuario no encontrado")
+    u.permisos = body.permisos if body.permisos else None
+    db.commit()
+    return {"ok": True, "permisos": u.permisos}
 
 
 @router.post("/users/{user_id}/toggle")

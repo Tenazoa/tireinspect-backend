@@ -33,6 +33,9 @@ class Inspector(Base):
     hashed_password: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[str] = mapped_column(String, default="inspector")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Páginas que puede ver (lista de claves). null = default por rol (admin ve todo;
+    # los demás ven todo MENOS gerencia e IA). El admin lo configura por usuario.
+    permisos: Mapped[list | None] = mapped_column(JSON, nullable=True)
     company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 

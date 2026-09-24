@@ -32,6 +32,7 @@ def _migrate():
         stmts.append("ALTER TABLE vehicle_vigilancia ADD COLUMN IF NOT EXISTS tipo_vehiculo VARCHAR")
         stmts.append("ALTER TABLE vehicle_vigilancia ADD COLUMN IF NOT EXISTS marca VARCHAR")
         stmts.append("ALTER TABLE reencauche_tires ADD COLUMN IF NOT EXISTS km_recorrido DOUBLE PRECISION")
+        stmts.append("ALTER TABLE inspectors ADD COLUMN IF NOT EXISTS permisos JSONB")
         # Seguridad: activar Row Level Security en TODAS las tablas públicas
         # (cierra el aviso rls_disabled_in_public de Supabase para tablas nuevas).
         # El backend se conecta como dueño/postgres, que ignora RLS, así que no
@@ -53,6 +54,7 @@ def _migrate():
         stmts.append("ALTER TABLE vehicle_vigilancia ADD COLUMN tipo_vehiculo VARCHAR")
         stmts.append("ALTER TABLE vehicle_vigilancia ADD COLUMN marca VARCHAR")
         stmts.append("ALTER TABLE reencauche_tires ADD COLUMN km_recorrido FLOAT")
+        stmts.append("ALTER TABLE inspectors ADD COLUMN permisos JSON")
     with engine.begin() as conn:
         for s in stmts:
             try:
