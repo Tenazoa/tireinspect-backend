@@ -3828,9 +3828,10 @@ def get_rendimiento(
         km = km_mont if (km_mont and km_mont > 0) else None
         mm_gast = (orig - act) if (orig is not None and act is not None) else None
         km_mm = round(km / mm_gast, 1) if (km and mm_gast and mm_gast > 0) else None
-        # Descarta km/mm irreal (dato inconsistente): una llanta de camión no rinde
-        # más de ~45,000 km por mm.
-        if km_mm and km_mm > 45000:
+        # Descarta km/mm irreal: con 1 mm de desgaste el ritmo es ruidoso, y datos
+        # inconsistentes dan valores absurdos. La regla TYMSAC es ~8,000 km/mm; se
+        # tolera hasta ~25,000 (3x) y por encima se considera no confiable.
+        if km_mm and km_mm > 25000:
             km_mm = None
         pct = round((orig - act) / orig * 100, 1) if (orig and act is not None and orig > 0) else None
         # Proyección: km total estimado al llegar al límite de retiro, al ritmo actual.
