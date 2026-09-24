@@ -811,6 +811,28 @@ def fleet_stock(
     by_size = Counter((r["size"] or "—").strip() or "—" for r in items)
     by_life = Counter((r["life"] or "—").strip() or "—" for r in items)
     out = items[:3000]
+
+    # Fecha de instalación (FechaIngreso del Detalle) SOLO para los códigos que se
+    # devuelven (consulta acotada: no carga los ~15k JSON del Detalle en memoria).
+    codes_out = {(r["code"] or "").strip().upper() for r in out if r.get("code")}
+    if codes_out:
+        finst: dict[str, str] = {}
+        code_list = list(codes_out)
+        for i in range(0, len(code_list), 900):
+            chunk = code_list[i:i + 900]
+            for det_code, data in db.query(TireDetalle.code, TireDetalle.data).filter(
+                    TireDetalle.company_id == cid, TireDetalle.code.in_(chunk)):
+                k = (det_code or "").strip().upper()
+                if k in finst or not data:
+                    continue
+                for campo in ("FechaIngreso", "Fecha", "FechaPrimera"):
+                    raw = str(data.get(campo, "")).strip()
+                    if raw and raw not in ("0", "None"):
+                        finst[k] = raw
+                        break
+        for r in out:
+            r["fechaInstalacion"] = finst.get((r["code"] or "").strip().upper())
+
     top = lambda cnt: [{"label": k, "count": v} for k, v in cnt.most_common(50)]
     return {
         "total": len(rows),
