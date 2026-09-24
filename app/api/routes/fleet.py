@@ -3821,9 +3821,17 @@ def get_rendimiento(
     for r in rows:
         orig = r.cocada_orig
         act = r.cocada_act
-        km = r.km if (r.km and r.km > 0) else _km_desde(r.placa, r.fecha_montaje)
+        # Km recorrido = lo que rodó la UNIDAD desde el montaje (km mensual): es el km
+        # real de la llanta en su vida actual. KMVida de SOLOMON viene inflado (acumula
+        # otras vidas), por eso solo se usa como respaldo.
+        km_mont = _km_desde(r.placa, r.fecha_montaje)
+        km = km_mont if (km_mont and km_mont > 0) else None
         mm_gast = (orig - act) if (orig is not None and act is not None) else None
         km_mm = round(km / mm_gast, 1) if (km and mm_gast and mm_gast > 0) else None
+        # Descarta km/mm irreal (dato inconsistente): una llanta de camión no rinde
+        # más de ~45,000 km por mm.
+        if km_mm and km_mm > 45000:
+            km_mm = None
         pct = round((orig - act) / orig * 100, 1) if (orig and act is not None and orig > 0) else None
         # Proyección: km total estimado al llegar al límite de retiro, al ritmo actual.
         proy = round((orig - limite) * km_mm) if (km_mm and orig is not None and orig > limite) else None
