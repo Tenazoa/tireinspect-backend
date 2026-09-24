@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia, VehicleEstadoOficial, ReencaucheTire, ParkedTire
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia, VehicleEstadoOficial, ReencaucheTire, ParkedTire, TireInstall
 
 
 def _audit(db, inspector, action, target, detail):
@@ -812,26 +812,17 @@ def fleet_stock(
     by_life = Counter((r["life"] or "—").strip() or "—" for r in items)
     out = items[:3000]
 
-    # Fecha de instalación (FechaIngreso del Detalle) SOLO para los códigos que se
-    # devuelven (consulta acotada: no carga los ~15k JSON del Detalle en memoria).
-    codes_out = {(r["code"] or "").strip().upper() for r in out if r.get("code")}
-    if codes_out:
-        finst: dict[str, str] = {}
-        code_list = list(codes_out)
-        for i in range(0, len(code_list), 900):
-            chunk = code_list[i:i + 900]
-            for det_code, data in db.query(TireDetalle.code, TireDetalle.data).filter(
-                    TireDetalle.company_id == cid, TireDetalle.code.in_(chunk)):
-                k = (det_code or "").strip().upper()
-                if k in finst or not data:
-                    continue
-                for campo in ("FechaIngreso", "Fecha", "FechaPrimera"):
-                    raw = str(data.get(campo, "")).strip()
-                    if raw and raw not in ("0", "None"):
-                        finst[k] = raw
-                        break
-        for r in out:
-            r["fechaInstalacion"] = finst.get((r["code"] or "").strip().upper())
+    # Instalación por llanta (fecha y km) desde SOLOMON (tabla LLantas), guardada
+    # en tire_install (columnas indexadas, sin JSON): consulta ligera por código.
+    inst_map: dict[str, dict] = {
+        (c or "").strip().upper(): {"fecha": f, "km": km}
+        for c, f, km in db.query(TireInstall.code, TireInstall.fecha_ingreso, TireInstall.km_ingreso)
+        .filter(TireInstall.company_id == cid)
+    }
+    for r in out:
+        inf = inst_map.get((r["code"] or "").strip().upper())
+        r["fechaInstalacion"] = inf["fecha"] if inf else None
+        r["kmInstalacion"] = inf["km"] if inf else None
 
     top = lambda cnt: [{"label": k, "count": v} for k, v in cnt.most_common(50)]
     return {
@@ -3743,6 +3734,47 @@ def get_llantas_paradas(
                     "aprovechables": aprov, "noAprovechables": len(items) - aprov,
                     "inactivas": inact, "porVida": por_vida},
     }
+
+
+# ── Instalación por llanta (SOLOMON tabla LLantas) ───────────────────────────
+
+class TireInstallIn(BaseModel):
+    code: str
+    placa: Optional[str] = None
+    fechaIngreso: Optional[str] = None
+    kmIngreso: Optional[float] = None
+    posicion: Optional[str] = None
+
+
+class TireInstallsIn(BaseModel):
+    items: list[TireInstallIn]
+
+
+@router.post("/upload-instalacion")
+def upload_instalacion(
+    body: TireInstallsIn,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Recibe placa/fecha/km de instalación por llanta (SOLOMON LLantas)."""
+    if inspector.role not in ("admin", "supervisor"):
+        raise HTTPException(403, "Solo admin o supervisor pueden cargar la instalación")
+    cid = inspector.company_id
+    db.query(TireInstall).filter(TireInstall.company_id == cid).delete()
+    n = 0
+    for r in body.items:
+        code = (r.code or "").strip()
+        if not code:
+            continue
+        db.add(TireInstall(
+            company_id=cid, code=code,
+            placa=(r.placa or "").strip().upper().replace(" ", "") or None,
+            fecha_ingreso=(r.fechaIngreso or "").strip() or None,
+            km_ingreso=r.kmIngreso, posicion=(r.posicion or "").strip() or None,
+        ))
+        n += 1
+    db.commit()
+    return {"ok": True, "cargadas": n}
 
 
 @router.get("/{plate}", response_model=list[TireSpecOut])

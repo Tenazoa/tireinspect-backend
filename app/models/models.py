@@ -377,6 +377,21 @@ class Descargo(Base):
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
 
 
+class TireInstall(Base):
+    """Instalación por llanta desde SOLOMON (tabla LLantas): placa donde está,
+    fecha de instalación (FechaIngreso) y km de instalación (KMRIngreso).
+    Se sube por el sync; alimenta las columnas del Inventario."""
+    __tablename__ = "tire_install"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    code: Mapped[str] = mapped_column(String, nullable=False, index=True)   # NroLlanta
+    placa: Mapped[str | None] = mapped_column(String, nullable=True)
+    fecha_ingreso: Mapped[str | None] = mapped_column(String, nullable=True)   # dd/mm/yyyy
+    km_ingreso: Mapped[float | None] = mapped_column(Float, nullable=True)
+    posicion: Mapped[str | None] = mapped_column(String, nullable=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
 class ParkedTire(Base):
     """Reporte SOLOMON 'NO RECORRIENDO (DÍAS PARADOS)' — una fila por LLANTA que
     no rueda: días parada, placa, posición, km y vida. Para priorizar retiro/
