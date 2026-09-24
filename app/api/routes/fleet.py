@@ -3650,11 +3650,27 @@ def get_llantas_paradas(
     las aprovechables (≥8 mm). Buckets por antigüedad (<3, 3-6, +6 meses)."""
     cid = inspector.company_id
     rows = db.query(ParkedTire).filter(ParkedTire.company_id == cid).all()
-    # cocada por código (best-effort) para marcar aprovechables
-    coc: dict[str, float] = {}
+    # marca / medida / cocada por código (best-effort desde specs, stock y detalle)
+    info: dict[str, dict] = {}
+
+    def _merge(code, marca=None, medida=None, cocada=None):
+        if not code:
+            return
+        k = str(code).strip()
+        d = info.setdefault(k, {"marca": None, "medida": None, "cocada": None})
+        if marca and not d["marca"]:
+            d["marca"] = str(marca).strip() or None
+        if medida and not d["medida"]:
+            d["medida"] = str(medida).strip() or None
+        if cocada is not None and d["cocada"] is None:
+            d["cocada"] = float(cocada)
+
     for s in db.query(TireSpec).filter(TireSpec.company_id == cid).all():
-        if s.code and s.last_depth_mm is not None:
-            coc.setdefault(str(s.code).strip(), float(s.last_depth_mm))
+        _merge(s.code, s.brand, s.size, s.last_depth_mm)
+    for s in db.query(TireStock).filter(TireStock.company_id == cid).all():
+        _merge(s.code, s.brand, s.size, s.depth_mm)
+    for s in db.query(TireDetalle).filter(TireDetalle.company_id == cid).all():
+        _merge(s.code, s.brand, s.size, None)
     # estado activo/inactivo de cada placa (tabla de vehículos de la empresa)
     def _p(x):
         return (x or "").upper().replace("-", "").replace(" ", "")
@@ -3665,6 +3681,7 @@ def get_llantas_paradas(
     APROV = 8.0
     items = []
     menos3 = tres6 = mas6 = aprov = inact = 0
+    por_vida: dict[str, int] = {}
     for r in rows:
         d = int(r.dias or 0)
         if d < 90:
@@ -3673,24 +3690,28 @@ def get_llantas_paradas(
             tres6 += 1
         else:
             mas6 += 1
-        cocada = coc.get((r.code or "").strip())
+        inf = info.get((r.code or "").strip(), {})
+        cocada = inf.get("cocada")
         ap = cocada is not None and cocada >= APROV
         if ap:
             aprov += 1
         activa = activa_por_placa.get(_p(r.placa), True)
         if not activa:
             inact += 1
+        vida = (r.vida or "—").strip() or "—"
+        por_vida[vida] = por_vida.get(vida, 0) + 1
         items.append({
-            "code": r.code, "vida": r.vida, "placa": r.placa, "posicion": r.posicion,
-            "km": r.km, "dias": d, "meses": round(d / 30.0, 1),
+            "code": r.code, "vida": r.vida, "marca": inf.get("marca"), "medida": inf.get("medida"),
+            "placa": r.placa, "posicion": r.posicion, "km": r.km, "dias": d, "meses": round(d / 30.0, 1),
             "tipoUnidad": r.tipo_unidad, "condicion": r.condicion,
             "cocada": cocada, "aprovechable": ap, "activa": activa,
         })
     items.sort(key=lambda x: x["dias"], reverse=True)
     return {
         "items": items,
-        "resumen": {"total": len(items), "menos3": menos3, "tres6": tres6,
-                    "mas6": mas6, "aprovechables": aprov, "inactivas": inact},
+        "resumen": {"total": len(items), "menos3": menos3, "tres6": tres6, "mas6": mas6,
+                    "aprovechables": aprov, "noAprovechables": len(items) - aprov,
+                    "inactivas": inact, "porVida": por_vida},
     }
 
 
