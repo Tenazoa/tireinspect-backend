@@ -394,6 +394,7 @@ class TireLifePerf(Base):
     proveedor: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     vida: Mapped[str | None] = mapped_column(String, nullable=True)
     km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    costo: Mapped[float | None] = mapped_column(Float, nullable=True)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
 
 

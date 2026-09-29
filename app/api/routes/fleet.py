@@ -3747,6 +3747,7 @@ class LifePerfItemIn(BaseModel):
     proveedor: Optional[str] = None
     vida: Optional[str] = None
     km: Optional[float] = None
+    costo: Optional[float] = None
 
 
 class LifePerfIn(BaseModel):
@@ -3773,7 +3774,7 @@ def upload_rend_proveedor(
             company_id=cid, code=code, tipo=(r.tipo or "").strip() or None,
             marca=(r.marca or "").strip() or None, modelo=(r.modelo or "").strip() or None,
             medida=(r.medida or "").strip() or None, proveedor=(r.proveedor or "").strip() or None,
-            vida=(r.vida or "").strip() or None, km=r.km,
+            vida=(r.vida or "").strip() or None, km=r.km, costo=r.costo,
         ))
         n += 1
     db.commit()
@@ -3798,20 +3799,37 @@ def get_rend_proveedor(
             k = key_fn(it)
             if not k or it.km is None or not (5000 <= it.km <= 400000):
                 continue
-            d = g.setdefault(k, {"nombre": k, "n": 0, "sumKm": 0.0, "minKm": None, "maxKm": None})
+            d = g.setdefault(k, {"nombre": k, "n": 0, "sumKm": 0.0, "minKm": None, "maxKm": None,
+                                 "sumCosto": 0.0, "nCosto": 0})
             d["n"] += 1
             d["sumKm"] += it.km
             d["minKm"] = it.km if d["minKm"] is None else min(d["minKm"], it.km)
             d["maxKm"] = it.km if d["maxKm"] is None else max(d["maxKm"], it.km)
-        out = [{"nombre": d["nombre"], "llantas": d["n"], "kmProm": round(d["sumKm"] / d["n"]),
-                "kmMin": round(d["minKm"]), "kmMax": round(d["maxKm"])}
-               for d in g.values() if d["n"] >= minN]
+            if it.costo and it.costo > 0:
+                d["sumCosto"] += it.costo
+                d["nCosto"] += 1
+        out = []
+        for d in g.values():
+            if d["n"] < minN:
+                continue
+            km_prom = d["sumKm"] / d["n"]
+            costo_prom = round(d["sumCosto"] / d["nCosto"], 2) if d["nCosto"] else None
+            # CPK = costo por 1000 km (S/): cuánto cuesta cada 1000 km con esa marca/proveedor.
+            cpk = round(costo_prom / km_prom * 1000, 2) if (costo_prom and km_prom) else None
+            out.append({"nombre": d["nombre"], "llantas": d["n"], "kmProm": round(km_prom),
+                        "kmMin": round(d["minKm"]), "kmMax": round(d["maxKm"]),
+                        "costo": costo_prom, "cpk": cpk})
         return sorted(out, key=lambda x: x["kmProm"], reverse=True)
 
     nuevas = [r for r in rows if r.tipo == "nueva"]
     reenc = [r for r in rows if r.tipo == "reencauche"]
     nuevas_marca = _agrupar([r for r in nuevas if (r.marca or "").upper() != "VARIOS"], lambda r: r.marca)
     reenc_prov = _agrupar(reenc, lambda r: r.proveedor)
+
+    def _mejor_cpk(lst):
+        con = [x for x in lst if x.get("cpk")]
+        return min(con, key=lambda x: x["cpk"]) if con else None
+    mc, mr = _mejor_cpk(nuevas_marca), _mejor_cpk(reenc_prov)
     return {
         "nuevasPorMarca": nuevas_marca,
         "reencauchePorProveedor": reenc_prov,
@@ -3820,6 +3838,8 @@ def get_rend_proveedor(
             "mejorMarcaKm": nuevas_marca[0]["kmProm"] if nuevas_marca else None,
             "mejorReencauchadora": reenc_prov[0]["nombre"] if reenc_prov else None,
             "mejorReencauchadoraKm": reenc_prov[0]["kmProm"] if reenc_prov else None,
+            "mejorCpkMarca": mc["nombre"] if mc else None, "mejorCpkMarcaVal": mc["cpk"] if mc else None,
+            "mejorCpkReenc": mr["nombre"] if mr else None, "mejorCpkReencVal": mr["cpk"] if mr else None,
             "vidasNuevas": len(nuevas), "vidasReenc": len(reenc),
         },
     }
