@@ -395,6 +395,7 @@ class TireLifePerf(Base):
     vida: Mapped[str | None] = mapped_column(String, nullable=True)
     km: Mapped[float | None] = mapped_column(Float, nullable=True)
     costo: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fecha_ini: Mapped[str | None] = mapped_column(String, nullable=True)   # instalación / inicio de la vida
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
 
 

@@ -3748,6 +3748,7 @@ class LifePerfItemIn(BaseModel):
     vida: Optional[str] = None
     km: Optional[float] = None
     costo: Optional[float] = None
+    fechaIni: Optional[str] = None
 
 
 class LifePerfIn(BaseModel):
@@ -3775,6 +3776,7 @@ def upload_rend_proveedor(
             marca=(r.marca or "").strip() or None, modelo=(r.modelo or "").strip() or None,
             medida=(r.medida or "").strip() or None, proveedor=(r.proveedor or "").strip() or None,
             vida=(r.vida or "").strip() or None, km=r.km, costo=r.costo,
+            fecha_ini=(r.fechaIni or "").strip() or None,
         ))
         n += 1
     db.commit()
@@ -3862,7 +3864,7 @@ def get_rend_proveedor_detalle(
     rows = [r for r in q.all() if r.km is not None and 5000 <= r.km <= 400000]
     items = [{
         "code": r.code, "marca": r.marca, "modelo": r.modelo, "medida": r.medida,
-        "vida": r.vida, "km": round(r.km), "costo": r.costo,
+        "vida": r.vida, "km": round(r.km), "costo": r.costo, "fechaIni": r.fecha_ini,
     } for r in sorted(rows, key=lambda x: x.km or 0, reverse=True)]
     return {"nombre": nombre, "tipo": tipo, "items": items, "total": len(items)}
 
