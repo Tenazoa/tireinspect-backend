@@ -3845,6 +3845,28 @@ def get_rend_proveedor(
     }
 
 
+@router.get("/rendimiento-proveedor-detalle")
+def get_rend_proveedor_detalle(
+    tipo: str,
+    nombre: str,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Llantas individuales de una marca (nuevas) o reencauchadora (reencauche)."""
+    cid = inspector.company_id
+    q = db.query(TireLifePerf).filter(TireLifePerf.company_id == cid, TireLifePerf.tipo == tipo)
+    if tipo == "nueva":
+        q = q.filter(TireLifePerf.marca == nombre)
+    else:
+        q = q.filter(TireLifePerf.proveedor == nombre)
+    rows = [r for r in q.all() if r.km is not None and 5000 <= r.km <= 400000]
+    items = [{
+        "code": r.code, "marca": r.marca, "modelo": r.modelo, "medida": r.medida,
+        "vida": r.vida, "km": round(r.km), "costo": r.costo,
+    } for r in sorted(rows, key=lambda x: x.km or 0, reverse=True)]
+    return {"nombre": nombre, "tipo": tipo, "items": items, "total": len(items)}
+
+
 # ── Rendimiento y proyección por llanta (SOLOMON) ────────────────────────────
 
 class RendItemIn(BaseModel):
