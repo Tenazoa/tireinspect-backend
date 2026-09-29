@@ -380,6 +380,23 @@ class Descargo(Base):
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
 
 
+class TireLifePerf(Base):
+    """Rendimiento por vida de llanta (SOLOMON): km que duró cada vida + proveedor
+    (nueva=distribuidor/marca; reencauche=reencauchadora). Para rankear proveedores."""
+    __tablename__ = "tire_life_perf"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    code: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    tipo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)   # nueva | reencauche
+    marca: Mapped[str | None] = mapped_column(String, nullable=True)
+    modelo: Mapped[str | None] = mapped_column(String, nullable=True)
+    medida: Mapped[str | None] = mapped_column(String, nullable=True)
+    proveedor: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    vida: Mapped[str | None] = mapped_column(String, nullable=True)
+    km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+
+
 class TireRendimiento(Base):
     """Rendimiento por llanta montada (SOLOMON): cocada original (del último
     'Enllante'/montaje) y actual, km recorrido de la vida y fecha de montaje.

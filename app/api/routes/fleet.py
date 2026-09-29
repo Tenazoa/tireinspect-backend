@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from ...core.database import get_db
-from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia, VehicleEstadoOficial, ReencaucheTire, ParkedTire, TireInstall, TireRendimiento
+from ...models.models import Vehicle, TireSpec, Inspector, Inspection, TireInspection, TireStock, AuditLog, TireDetalle, VehicleInfo, VehicleKm, CarretaLink, VehicleGastos, TireMedida, TireKmVida, VehicleVigilancia, VehicleEstadoOficial, ReencaucheTire, ParkedTire, TireInstall, TireRendimiento, TireLifePerf
 
 
 def _audit(db, inspector, action, target, detail):
@@ -3733,6 +3733,95 @@ def get_llantas_paradas(
         "resumen": {"total": len(items), "menos3": menos3, "tres6": tres6, "mas6": mas6,
                     "aprovechables": aprov, "noAprovechables": len(items) - aprov,
                     "inactivas": inact, "porVida": por_vida},
+    }
+
+
+# ── Rendimiento por proveedor / reencauchadora (SOLOMON) ─────────────────────
+
+class LifePerfItemIn(BaseModel):
+    code: str
+    tipo: Optional[str] = None
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    medida: Optional[str] = None
+    proveedor: Optional[str] = None
+    vida: Optional[str] = None
+    km: Optional[float] = None
+
+
+class LifePerfIn(BaseModel):
+    items: list[LifePerfItemIn]
+
+
+@router.post("/upload-rendimiento-proveedor")
+def upload_rend_proveedor(
+    body: LifePerfIn,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Recibe el km por vida + proveedor de cada llanta (SOLOMON). Lo sube el script PC."""
+    if inspector.role not in ("admin", "supervisor"):
+        raise HTTPException(403, "Solo admin o supervisor pueden cargar el rendimiento")
+    cid = inspector.company_id
+    db.query(TireLifePerf).filter(TireLifePerf.company_id == cid).delete()
+    n = 0
+    for r in body.items:
+        code = (r.code or "").strip()
+        if not code:
+            continue
+        db.add(TireLifePerf(
+            company_id=cid, code=code, tipo=(r.tipo or "").strip() or None,
+            marca=(r.marca or "").strip() or None, modelo=(r.modelo or "").strip() or None,
+            medida=(r.medida or "").strip() or None, proveedor=(r.proveedor or "").strip() or None,
+            vida=(r.vida or "").strip() or None, km=r.km,
+        ))
+        n += 1
+    db.commit()
+    _audit(db, inspector, "cargar-rend-proveedor", f"{n} vidas", "SOLOMON")
+    return {"ok": True, "cargadas": n}
+
+
+@router.get("/rendimiento-proveedor")
+def get_rend_proveedor(
+    minN: int = 8,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Ranking de durabilidad: km promedio por vida. Nuevas por MARCA (el proveedor
+    de 1V no es fiable en SOLOMON) y reencauche por REENCAUCHADORA."""
+    cid = inspector.company_id
+    rows = db.query(TireLifePerf).filter(TireLifePerf.company_id == cid).all()
+
+    def _agrupar(items, key_fn):
+        g: dict[str, dict] = {}
+        for it in items:
+            k = key_fn(it)
+            if not k or it.km is None or not (5000 <= it.km <= 400000):
+                continue
+            d = g.setdefault(k, {"nombre": k, "n": 0, "sumKm": 0.0, "minKm": None, "maxKm": None})
+            d["n"] += 1
+            d["sumKm"] += it.km
+            d["minKm"] = it.km if d["minKm"] is None else min(d["minKm"], it.km)
+            d["maxKm"] = it.km if d["maxKm"] is None else max(d["maxKm"], it.km)
+        out = [{"nombre": d["nombre"], "llantas": d["n"], "kmProm": round(d["sumKm"] / d["n"]),
+                "kmMin": round(d["minKm"]), "kmMax": round(d["maxKm"])}
+               for d in g.values() if d["n"] >= minN]
+        return sorted(out, key=lambda x: x["kmProm"], reverse=True)
+
+    nuevas = [r for r in rows if r.tipo == "nueva"]
+    reenc = [r for r in rows if r.tipo == "reencauche"]
+    nuevas_marca = _agrupar([r for r in nuevas if (r.marca or "").upper() != "VARIOS"], lambda r: r.marca)
+    reenc_prov = _agrupar(reenc, lambda r: r.proveedor)
+    return {
+        "nuevasPorMarca": nuevas_marca,
+        "reencauchePorProveedor": reenc_prov,
+        "resumen": {
+            "mejorMarca": nuevas_marca[0]["nombre"] if nuevas_marca else None,
+            "mejorMarcaKm": nuevas_marca[0]["kmProm"] if nuevas_marca else None,
+            "mejorReencauchadora": reenc_prov[0]["nombre"] if reenc_prov else None,
+            "mejorReencauchadoraKm": reenc_prov[0]["kmProm"] if reenc_prov else None,
+            "vidasNuevas": len(nuevas), "vidasReenc": len(reenc),
+        },
     }
 
 
