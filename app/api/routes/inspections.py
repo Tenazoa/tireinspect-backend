@@ -123,20 +123,26 @@ def _norm_placa(p: Optional[str]) -> str:
     return (p or "").upper().replace("-", "").replace(" ", "")
 
 
+def _km_map(db: Session, company_id) -> dict:
+    """Mapa placa normalizada -> odómetro actual (VehicleInfo.km_actual de SOLOMON)."""
+    out = {}
+    for v in db.query(VehicleInfo.plate, VehicleInfo.km_actual).filter(
+            VehicleInfo.company_id == company_id):
+        if v[1]:
+            try:
+                out[_norm_placa(v[0])] = int(round(float(v[1])))
+            except Exception:
+                pass
+    return out
+
+
 def _km_solomon(db: Session, company_id, plate: Optional[str]) -> Optional[int]:
     """Odómetro actual de la unidad según SOLOMON (VehicleInfo.km_actual),
     para usarlo como kilometraje de la inspección cuando el celular no lo captura."""
     key = _norm_placa(plate)
     if not key:
         return None
-    rows = db.query(VehicleInfo).filter(VehicleInfo.company_id == company_id).all()
-    for v in rows:
-        if _norm_placa(v.plate) == key and v.km_actual:
-            try:
-                return int(round(float(v.km_actual)))
-            except Exception:
-                return None
-    return None
+    return _km_map(db, company_id).get(key)
 
 
 def _fecha(txt: str) -> datetime:
@@ -500,6 +506,7 @@ def seed_from_specs(
         key = (s.plate or "").upper().replace("-", "").replace(" ", "")
         by_plate.setdefault(key, []).append(s)
 
+    km_by_plate = _km_map(db, inspector.company_id)
     now = datetime.utcnow()
     created = 0
     tires_total = 0
@@ -524,7 +531,8 @@ def seed_from_specs(
             status="completed",
             created_at=when,
             completed_at=when,
-            odometer_km=None,
+            # km del día desde SOLOMON (igual que las inspecciones del móvil)
+            odometer_km=km_by_plate.get(_norm_placa(v.plate)),
         )
         db.add(insp)
         db.flush()
