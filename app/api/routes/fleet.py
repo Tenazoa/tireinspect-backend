@@ -1706,6 +1706,45 @@ async def upload_unidades(
     return {"ok": True, "count": count, "vehiculosActualizados": upd}
 
 
+class OdoItemIn(BaseModel):
+    placa: str
+    km: float
+
+
+class OdoIn(BaseModel):
+    items: list[OdoItemIn]
+
+
+@router.post("/upload-odometro")
+def upload_odometro(
+    body: OdoIn,
+    db: Session = Depends(get_db),
+    inspector: Inspector = Depends(get_current_inspector),
+):
+    """Odómetro acumulado por placa (SUM de LL_TblKMPlaca en SOLOMON). Solo rellena
+    las unidades SIN km_actual en la ficha — típicamente las CARRETAS, que no tienen
+    odómetro físico y SOLOMON acumula sumando el km de cada viaje. A los tractos no
+    se les toca el odómetro real de la ficha."""
+    cid = inspector.company_id
+
+    def _norm(p):
+        return (p or "").upper().replace("-", "").replace(" ", "")
+
+    rows = db.query(VehicleInfo).filter(VehicleInfo.company_id == cid).all()
+    idx = {_norm(v.plate): v for v in rows}
+    n = 0
+    for it in body.items:
+        v = idx.get(_norm(it.placa))
+        if v and (not v.km_actual or v.km_actual <= 0) and it.km and it.km > 0:
+            v.km_actual = float(it.km)
+            n += 1
+    db.commit()
+    from .inspections import invalidate_dashboard_cache
+    invalidate_dashboard_cache()
+    _audit(db, inspector, "cargar-odometro", "LL_TblKMPlaca", f"{n} unidades (carretas) con km acumulado")
+    return {"ok": True, "updated": n}
+
+
 @router.post("/upload-km")
 async def upload_km(
     file: UploadFile = File(...),
