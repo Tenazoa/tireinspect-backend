@@ -3120,14 +3120,39 @@ def get_unidad_360(
                 fecha_inst_raw[code] = raw
                 break
 
+    # Cocada MEDIDA en la última inspección del móvil (gana sobre la de SOLOMON):
+    # por posición, la menor de las 3 zonas, y la fecha de esa inspección.
+    insp_coc: dict[str, float] = {}
+    insp_fecha = None
+    veh = db.query(Vehicle).filter(
+        Vehicle.company_id == cid, Vehicle.plate == p).first()
+    if veh:
+        ultima = (db.query(Inspection)
+                  .filter(Inspection.vehicle_id == veh.id)
+                  .order_by(Inspection.created_at.desc()).first())
+        if ultima:
+            insp_fecha = (ultima.completed_at or ultima.created_at)
+            for t in ultima.tires:
+                zonas = [z for z in (t.tread_depth_inner, t.tread_depth_center,
+                                     t.tread_depth_outer) if z is not None]
+                if zonas and t.position:
+                    insp_coc[t.position] = min(zonas)
+    insp_fecha_txt = insp_fecha.strftime("%d/%m/%Y") if insp_fecha else None
+
     def _llanta(s):
         code = (s.code or "").strip().upper()
         fi = fecha_inst.get(code)
         # recorrido: km real de la vida (LL_KmVida) si existe, si no km desde la instalación
         km_rec = s.km_life if s.km_life else _km_desde(fi)
+        # cocada: la medida hoy en el móvil si existe; si no, la última de SOLOMON
+        coc_med = insp_coc.get(s.position)
         return {
             "position": s.position, "code": s.code, "brand": s.brand, "model": s.model,
-            "size": s.size, "cocada": s.last_depth_mm, "vida": s.life, "kmTotal": s.km_total,
+            "size": s.size,
+            "cocada": coc_med if coc_med is not None else s.last_depth_mm,
+            "cocadaMedida": coc_med is not None,
+            "cocadaFecha": insp_fecha_txt if coc_med is not None else None,
+            "vida": s.life, "kmTotal": s.km_total,
             "fechaInstalacion": fecha_inst_raw.get(code),
             "kmRecorrido": round(km_rec, 0) if km_rec is not None else None,
         }
