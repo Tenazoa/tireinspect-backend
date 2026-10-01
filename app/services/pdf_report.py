@@ -69,11 +69,12 @@ class _PosLabel:
 POSITION_LABEL = _PosLabel()
 
 
-def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str, spec_lookup: dict | None = None) -> bytes:
+def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str, spec_lookup: dict | None = None, km_actual=None) -> bytes:
     """
     Genera el PDF de una inspección. Retorna los bytes del archivo.
     `inspection`, `vehicle`, `inspector` son objetos ORM.
-    `spec_lookup`: dict {posicion: {"code":.., "life":..}} para código de fuego y vida.
+    `spec_lookup`: dict {posicion: {"code":.., "life":.., "fechaInstalacion":.., "kmRecorrido":..}}.
+    `km_actual`: odómetro actual de la unidad en SOLOMON (último kilometraje).
     """
     spec_lookup = spec_lookup or {}
     buffer = io.BytesIO()
@@ -106,10 +107,12 @@ def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str, s
     # ── Datos generales ──
     created = inspection.completed_at or inspection.created_at
     fecha = created.strftime("%d/%m/%Y %H:%M") if created else "—"
+    km_ult = km_actual if km_actual else inspection.odometer_km
+    km_txt = f"{int(km_ult):,} km".replace(",", " ") if km_ult else "—"
     info_data = [
         ["Placa:", vehicle.plate, "Fecha:", fecha],
         ["Vehículo:", f"{vehicle.brand} {vehicle.model} {vehicle.year or ''}", "Inspector:", inspector.name],
-        ["Tipo:", (vehicle.type or "").capitalize(), "Odómetro:", f"{inspection.odometer_km or '—'} km"],
+        ["Tipo:", (vehicle.type or "").capitalize(), "Último km:", km_txt],
     ]
     info_table = Table(info_data, colWidths=[25 * mm, 65 * mm, 25 * mm, 59 * mm])
     info_table.setStyle(TableStyle([
@@ -151,7 +154,7 @@ def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str, s
 
     # ── Detalle por llanta ──
     elements.append(Paragraph("Detalle por posición", h2))
-    header = ["Posición", "Cocada", "Marca / Modelo", "Medida", "Cód.", "Vida", "Km", "Estado"]
+    header = ["Posición", "Cocada", "Marca / Modelo", "Medida", "Cód.", "Vida", "Instalación", "Recorrido", "Estado"]
     rows = [header]
     for t in tires:
         zonas = [v for v in (t.tread_depth_inner, t.tread_depth_center, t.tread_depth_outer) if v is not None]
@@ -161,8 +164,9 @@ def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str, s
         sp = spec_lookup.get(t.position, {})
         codigo = sp.get("code") or t.dot_code or "—"
         vida = sp.get("life") or "—"
-        kmv = sp.get("km")
-        kmtxt = f"{int(kmv):,}".replace(",", " ") if kmv else "—"
+        finst = sp.get("fechaInstalacion") or "—"
+        kmr = sp.get("kmRecorrido")
+        kmrtxt = f"{int(kmr):,} km".replace(",", " ") if kmr else "—"
         rows.append([
             POSITION_LABEL.get(t.position, t.position),
             depth,
@@ -170,14 +174,15 @@ def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str, s
             t.size or "—",
             str(codigo),
             str(vida),
-            kmtxt,
+            str(finst),
+            kmrtxt,
             REC_LABEL.get(t.recommendation, t.recommendation),
         ])
 
-    tire_table = Table(rows, colWidths=[20 * mm, 18 * mm, 40 * mm, 24 * mm, 18 * mm, 12 * mm, 18 * mm, 24 * mm])
+    tire_table = Table(rows, colWidths=[18 * mm, 14 * mm, 34 * mm, 20 * mm, 16 * mm, 10 * mm, 20 * mm, 20 * mm, 22 * mm])
     style = [
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7f7")]),
@@ -188,8 +193,8 @@ def generate_inspection_pdf(inspection, vehicle, inspector, company_name: str, s
     ]
     # Colorear celda de estado según recomendación
     for i, t in enumerate(tires, start=1):
-        style.append(("TEXTCOLOR", (7, i), (7, i), REC_COLOR.get(t.recommendation, colors.black)))
-        style.append(("FONTNAME", (7, i), (7, i), "Helvetica-Bold"))
+        style.append(("TEXTCOLOR", (8, i), (8, i), REC_COLOR.get(t.recommendation, colors.black)))
+        style.append(("FONTNAME", (8, i), (8, i), "Helvetica-Bold"))
     tire_table.setStyle(TableStyle(style))
     elements.append(tire_table)
 

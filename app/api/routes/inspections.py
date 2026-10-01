@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import io
 from datetime import timedelta
 from ...core.database import get_db
-from ...models.models import Inspection, TireInspection, TirePhoto, Vehicle, Inspector, TireSpec
+from ...models.models import Inspection, TireInspection, TirePhoto, Vehicle, Inspector, TireSpec, VehicleInfo, TireInstall
 from ...api.deps import get_current_inspector
 from ...services.pdf_report import generate_inspection_pdf, position_label
 
@@ -119,6 +119,26 @@ class InspectionOut(BaseModel):
     completedAt: Optional[str]
 
 
+def _norm_placa(p: Optional[str]) -> str:
+    return (p or "").upper().replace("-", "").replace(" ", "")
+
+
+def _km_solomon(db: Session, company_id, plate: Optional[str]) -> Optional[int]:
+    """Odómetro actual de la unidad según SOLOMON (VehicleInfo.km_actual),
+    para usarlo como kilometraje de la inspección cuando el celular no lo captura."""
+    key = _norm_placa(plate)
+    if not key:
+        return None
+    rows = db.query(VehicleInfo).filter(VehicleInfo.company_id == company_id).all()
+    for v in rows:
+        if _norm_placa(v.plate) == key and v.km_actual:
+            try:
+                return int(round(float(v.km_actual)))
+            except Exception:
+                return None
+    return None
+
+
 def _fecha(txt: str) -> datetime:
     """Fecha ISO del celular ("...Z" o con zona) -> datetime UTC SIN zona, igual que la BD.
     Mezclar fechas con y sin zona hacía fallar (500) la re-sincronización al comparar
@@ -154,7 +174,9 @@ def sync_inspection(
     insp.location_lat = body.locationLat
     insp.location_lng = body.locationLng
     insp.location_address = body.locationAddress
-    insp.odometer_km = body.odometerKm
+    # El celular no captura odómetro: si no vino, se toma el km actual de la
+    # unidad en SOLOMON (VehicleInfo.km_actual) al momento de inspeccionar.
+    insp.odometer_km = body.odometerKm or _km_solomon(db, inspector.company_id, vehicle.plate)
     insp.status = body.status
     insp.created_at = _fecha(body.createdAt)
     insp.completed_at = _fecha(body.completedAt) if body.completedAt else None
@@ -346,14 +368,37 @@ def inspection_pdf(
     company_name = inspector.company.name if inspector.company else "TireInspect"
 
     # lookup de código de fuego + vida + km por posición (SOLOMON)
-    key = (vehicle.plate or "").upper().replace("-", "").replace(" ", "")
-    specs = db.query(TireSpec).filter(TireSpec.plate.isnot(None)).all()
-    spec_lookup = {
-        s.position: {"code": s.code, "life": s.life, "km": s.km_total}
-        for s in specs
-        if (s.plate or "").upper().replace("-", "").replace(" ", "") == key
-    }
-    pdf_bytes = generate_inspection_pdf(insp, vehicle, insp.inspector, company_name, spec_lookup)
+    key = _norm_placa(vehicle.plate)
+    specs = [s for s in db.query(TireSpec).filter(
+        TireSpec.company_id == inspector.company_id).all() if _norm_placa(s.plate) == key]
+
+    # Fecha y km de instalación por llanta (TireInstall, por NroLlanta / código).
+    codes = {(s.code or "").strip().upper() for s in specs if s.code}
+    inst_map = {}
+    if codes:
+        for ti in db.query(TireInstall).filter(TireInstall.company_id == inspector.company_id).all():
+            c = (ti.code or "").strip().upper()
+            if c in codes:
+                inst_map[c] = ti
+
+    # Odómetro actual de la unidad (para el km de recorrido de cada vida).
+    km_actual = _km_solomon(db, inspector.company_id, vehicle.plate)
+
+    spec_lookup = {}
+    for s in specs:
+        c = (s.code or "").strip().upper()
+        ti = inst_map.get(c)
+        # recorrido de la vida actual: km_life de SOLOMON; si no, odómetro actual − km de instalación
+        km_rec = s.km_life
+        if not km_rec and ti and ti.km_ingreso and km_actual:
+            diff = km_actual - ti.km_ingreso
+            km_rec = diff if diff > 0 else None
+        spec_lookup[s.position] = {
+            "code": s.code, "life": s.life, "km": s.km_total,
+            "fechaInstalacion": ti.fecha_ingreso if ti else None,
+            "kmRecorrido": km_rec,
+        }
+    pdf_bytes = generate_inspection_pdf(insp, vehicle, insp.inspector, company_name, spec_lookup, km_actual)
 
     filename = f"inspeccion_{vehicle.plate}_{insp.created_at.strftime('%Y%m%d')}.pdf"
     return StreamingResponse(
